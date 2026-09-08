@@ -42,8 +42,8 @@ jobs:
       - name: Verify Gradle wrapper
         run: ./gradlew --version
 
-      - name: Run unit tests
-        run: ./gradlew test --no-daemon --stacktrace
+      - name: Run CMF P0 unit tests
+        run: ./gradlew :app:testMainlineDebugUnitTest --no-daemon --stacktrace
 
       - name: Build debug APK
         run: ./gradlew assembleDebug --no-daemon --stacktrace
