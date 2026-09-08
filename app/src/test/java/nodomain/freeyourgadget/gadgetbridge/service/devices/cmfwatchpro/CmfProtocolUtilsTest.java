@@ -41,7 +41,7 @@ public class CmfProtocolUtilsTest {
     }
 
     @Test
-    public void alarmsPayloadPlacesLabelAtByteEightAndKeeps32ByteField() {
+    public void alarmsPayloadUsesProtocolFieldOrderAndPutsLabelAtByteEight() {
         final List<Alarm> alarms = List.of(new Alarm() {
             @Override public int getPosition() { return 2; }
             @Override public boolean getEnabled() { return true; }
@@ -62,10 +62,14 @@ public class CmfProtocolUtilsTest {
 
         final byte[] payload = CmfProtocolUtils.buildAlarmsPayload(alarms);
         assertEquals(40, payload.length);
-        assertEquals(0x00, payload[4]);
-        assertEquals(0x02, payload[5]);
-        assertEquals(0x01, payload[6]);
-        assertEquals(Alarm.ALARM_MON | Alarm.ALARM_FRI, payload[7]);
+        assertEquals(0x00, payload[0]);
+        assertEquals(0x00, payload[1]);
+        assertEquals((byte) 0xBD, payload[2]);
+        assertEquals((byte) 0xD8, payload[3]);
+        assertEquals(0x02, payload[4]);
+        assertEquals(0x01, payload[5]);
+        assertEquals(Alarm.ALARM_MON | Alarm.ALARM_FRI, payload[6]);
+        assertEquals(0x00, payload[7]);
         assertEquals('W', payload[8]);
         assertEquals('p', payload[9]);
         assertEquals(0, payload[15]);
