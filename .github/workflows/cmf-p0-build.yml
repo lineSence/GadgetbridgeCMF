@@ -27,11 +27,6 @@ jobs:
           java-version: '21'
           cache: gradle
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: wrapper
-
       - name: Make Gradle wrapper executable
         run: chmod +x ./gradlew
 
