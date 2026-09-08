@@ -1,0 +1,40 @@
+name: Sync official Gadgetbridge 0.93.0
+
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: github.repository == 'lineSence/GadgetbridgeCMF'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Import official Gadgetbridge 0.93.0
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          git fetch --no-tags https://codeberg.org/Freeyourgadget/Gadgetbridge.git refs/tags/0.93.0
+          upstream_sha="$(git rev-parse FETCH_HEAD^{commit})"
+
+          echo "Official Gadgetbridge 0.93.0 commit: ${upstream_sha}"
+          git show -s --format='%H%n%s%n%ad' --date=iso-strict "${upstream_sha}"
+
+          git branch -f backup/pre-sync-0.83.0 HEAD
+          git push origin refs/heads/backup/pre-sync-0.83.0:refs/heads/backup/pre-sync-0.83.0 --force
+
+          git push origin "${upstream_sha}:refs/heads/master" --force
