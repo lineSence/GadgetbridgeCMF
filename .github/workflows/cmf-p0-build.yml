@@ -1,0 +1,60 @@
+name: CMF P0 build
+
+on:
+  push:
+    branches:
+      - feature/cmf-p0
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Apply CMF P0 patch
+        shell: bash
+        run: |
+          cat > /tmp/cmf_p0.patch.gz.b64 <<'PATCH_B64'
+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
+PATCH_B64
+          base64 -d /tmp/cmf_p0.patch.gz.b64 > /tmp/cmf_p0.patch.gz
+          gunzip -c /tmp/cmf_p0.patch.gz > /tmp/cmf_p0.patch
+          patch --batch --forward -p1 < /tmp/cmf_p0.patch
+
+      - name: Run CMF P0 unit tests
+        run: ./gradlew :app:testMainlineDebugUnitTest --no-daemon --stacktrace
+
+      - name: Build Mainline debug APK
+        run: ./gradlew :app:assembleMainlineDebug --no-daemon --stacktrace
+
+      - name: Publish source changes to branch
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/cmfwatchpro/CmfActivitySync.java \
+                  app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/cmfwatchpro/CmfPreferences.java \
+                  app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/cmfwatchpro/CmfProtocolUtils.java \
+                  app/src/main/java/nodomain/freeyourgadget/gadgetbridge/service/devices/cmfwatchpro/CmfWatchProSupport.java \
+                  app/src/main/java/nodomain/freeyourgadget/gadgetbridge/devices/cmfwatchpro/CmfWatchProCoordinator.java \
+                  app/src/test/java/nodomain/freeyourgadget/gadgetbridge/service/devices/cmfwatchpro/CmfProtocolUtilsTest.java
+          git diff --cached --quiet || git commit -m "CMF Watch Pro 2: implement P0 stabilization [skip ci]"
+          git push origin HEAD:${GITHUB_REF_NAME}
+
+      - name: Collect APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: gadgetbridge-cmf-p0-mainline-debug
+          path: app/build/outputs/apk/mainline/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
