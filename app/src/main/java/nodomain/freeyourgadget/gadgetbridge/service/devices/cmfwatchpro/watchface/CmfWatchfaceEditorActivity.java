@@ -17,7 +17,9 @@
 package nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.watchface;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -53,10 +55,17 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 
+import nodomain.freeyourgadget.gadgetbridge.GBApplication;
 import nodomain.freeyourgadget.gadgetbridge.activities.install.FwAppInstallerActivity;
+import nodomain.freeyourgadget.gadgetbridge.devices.DeviceManager;
+import nodomain.freeyourgadget.gadgetbridge.impl.GBDevice;
 
 /**
  * Watchface editor that runs entirely on the phone.
@@ -69,6 +78,10 @@ import nodomain.freeyourgadget.gadgetbridge.activities.install.FwAppInstallerAct
  *     <li>build the watchface file, including an LZ4 round trip self check;</li>
  *     <li>hand the file to the normal Gadgetbridge install flow, which runs the BLE transfer.</li>
  * </ol>
+ *
+ * <p>The install screen does not search for a target by itself. It reads the device from the
+ * intent extra {@link GBDevice#EXTRA_DEVICE} and closes immediately when that extra is missing.
+ * The editor therefore resolves the target here, see {@link #sendToWatch()}.</p>
  *
  * <p>The inspector button is a development aid: it dumps the structure of any watchface file, so a
  * watchface exported by Nothing X can be compared byte by byte against what this editor produces.
@@ -547,8 +560,13 @@ public class CmfWatchfaceEditorActivity extends Activity {
      * Hands the built file to the Gadgetbridge install flow.
      *
      * <p>The file is shared through a content URI, because Android forbids passing file URIs
-     * between components. The install screen then asks the coordinator for an install handler,
-     * which recognises the photo watchface and starts the BLE transfer.</p>
+     * between components.</p>
+     *
+     * <p>The install screen needs the target device in the intent. Without the extra it shows
+     * "No device provided to FwAppInstallerActivity" and closes. So the target is resolved here:
+     * every known device is asked whether its coordinator accepts this file, which selects the
+     * CMF watch and skips unrelated gadgets. Connected devices come first, and the user is asked
+     * only when more than one device accepts the file.</p>
      */
     private void sendToWatch() {
         if (builtFile == null || !builtFile.exists()) {
@@ -566,14 +584,109 @@ public class CmfWatchfaceEditorActivity extends Activity {
             return;
         }
 
+        final List<GBDevice> known = knownDevices();
+        final List<GBDevice> targets = acceptingDevices(known, uri);
+
+        if (targets.isEmpty()) {
+            statusView.setText(known.isEmpty()
+                    ? "Устройство не найдено. Добавьте часы в Gadgetbridge и повторите."
+                    : "Ни одно устройство не принимает этот файл. Нужны часы CMF Watch Pro 2 или Pro 3.");
+            return;
+        }
+
+        if (targets.size() == 1) {
+            startInstaller(uri, targets.get(0));
+            return;
+        }
+
+        askWhichDevice(uri, targets);
+    }
+
+    /** Returns every device Gadgetbridge knows about, or an empty list before startup finished. */
+    private List<GBDevice> knownDevices() {
+        final GBApplication application = GBApplication.app();
+        if (application == null) {
+            LOG.warn("Application is not ready yet");
+            return new ArrayList<>();
+        }
+
+        final DeviceManager manager = application.getDeviceManager();
+        if (manager == null) {
+            LOG.warn("Device manager is not ready yet");
+            return new ArrayList<>();
+        }
+
+        return new ArrayList<>(manager.getDevices());
+    }
+
+    /**
+     * Keeps the devices that accept the file, most ready device first.
+     *
+     * <p>The question is answered by the same call the install screen makes later, so a device
+     * that passes here will also find its install handler there.</p>
+     */
+    private List<GBDevice> acceptingDevices(final List<GBDevice> devices, final Uri uri) {
+        final List<GBDevice> accepting = new ArrayList<>();
+
+        for (final GBDevice device : devices) {
+            try {
+                if (device.getDeviceCoordinator().findInstallHandler(uri, Bundle.EMPTY, this) != null) {
+                    accepting.add(device);
+                }
+            } catch (final RuntimeException e) {
+                LOG.warn("Device {} could not be asked about the file", device, e);
+            }
+        }
+
+        Collections.sort(accepting, new Comparator<GBDevice>() {
+            @Override
+            public int compare(final GBDevice left, final GBDevice right) {
+                return readiness(right) - readiness(left);
+            }
+        });
+
+        return accepting;
+    }
+
+    /** A connected watch is a better default target than a paired but idle one. */
+    private static int readiness(final GBDevice device) {
+        if (device.isInitialized()) {
+            return 2;
+        }
+        if (device.isConnected()) {
+            return 1;
+        }
+        return 0;
+    }
+
+    private void askWhichDevice(final Uri uri, final List<GBDevice> targets) {
+        final String[] labels = new String[targets.size()];
+        for (int i = 0; i < targets.size(); i++) {
+            labels[i] = targets.get(i).getAliasOrName();
+        }
+
+        new AlertDialog.Builder(this)
+                .setTitle("Куда отправить")
+                .setItems(labels, new DialogInterface.OnClickListener() {
+                    @Override
+                    public void onClick(final DialogInterface dialog, final int which) {
+                        startInstaller(uri, targets.get(which));
+                    }
+                })
+                .show();
+    }
+
+    private void startInstaller(final Uri uri, final GBDevice device) {
         final Intent intent = new Intent(this, FwAppInstallerActivity.class);
         intent.setAction(Intent.ACTION_VIEW);
         intent.setDataAndType(uri, "application/octet-stream");
         intent.putExtra(Intent.EXTRA_STREAM, uri);
+        intent.putExtra(GBDevice.EXTRA_DEVICE, device);
         intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
 
         try {
             startActivity(intent);
+            statusView.setText("Экран установки открыт: " + device.getAliasOrName());
         } catch (final RuntimeException e) {
             LOG.error("Failed to open the install screen", e);
             statusView.setText("Экран установки не открылся: " + describeError(e));
