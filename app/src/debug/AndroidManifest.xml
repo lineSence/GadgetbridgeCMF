@@ -71,6 +71,31 @@
             </intent-filter>
         </activity>
 
+        <!--
+            The watchface slots screen: shows the watchfaces installed on the watch, lets the user
+            pick the one the next upload replaces, and can activate or delete a watchface. The
+            watch has a fixed number of dial slots, so an upload without a chosen target would be
+            stored and never shown.
+        -->
+        <activity
+            android:name="nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.watchface.CmfWatchfaceSlotsActivity"
+            android:exported="true"
+            android:label="CMF слоты циферблатов"
+            android:launchMode="singleTop"
+            android:theme="@android:style/Theme.DeviceDefault">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Used by the "Слоты циферблатов" entry in the watch settings. -->
+            <intent-filter>
+                <action android:name="nodomain.freeyourgadget.gadgetbridge.cmf.watchface.SLOTS" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <service
             android:name="nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.recorder.CmfMicRecorderService"
             android:exported="true"
