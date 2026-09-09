@@ -29,6 +29,8 @@ import java.util.Random;
 import nodomain.freeyourgadget.gadgetbridge.R;
 import nodomain.freeyourgadget.gadgetbridge.impl.GBDevice;
 import nodomain.freeyourgadget.gadgetbridge.service.btle.TransactionBuilder;
+import nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.watchface.CmfPhotoWatchface;
+import nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.watchface.CmfWatchfacePrefs;
 
 public class CmfDataUploader implements CmfCharacteristic.Handler {
     private static final Logger LOG = LoggerFactory.getLogger(CmfDataUploader.class);
@@ -51,15 +53,10 @@ public class CmfDataUploader implements CmfCharacteristic.Handler {
                     return;
                 }
 
-                final ByteBuffer buf = ByteBuffer.allocate(9).order(ByteOrder.BIG_ENDIAN);
-                buf.put((byte) (0xa5));
-                buf.putInt(fwHelper.getBytes().length);
-                buf.putInt(new Random().nextInt()); // FIXME watchface ID?
-
                 mSupport.sendData(
                         "transfer watchface init 2 request",
                         CmfCommand.DATA_TRANSFER_WATCHFACE_INIT_2_REQUEST,
-                        buf.array()
+                        buildWatchfaceInit2Payload()
                 );
                 return;
             }
@@ -173,6 +170,32 @@ public class CmfDataUploader implements CmfCharacteristic.Handler {
         fwHelper = null;
     }
 
+    /**
+     * Builds the payload of the second watchface transfer init request.
+     *
+     * <p>A structured watchface downloaded from Nothing X gets its own watchface id, and the watch
+     * installs it as a new entry. A photo watchface built by the in-app editor always replaces the
+     * custom slot, so it pins the id and appends the clock overlay descriptor with the style,
+     * position and colour picked in the editor.</p>
+     */
+    private byte[] buildWatchfaceInit2Payload() {
+        final int fileSize = fwHelper.getBytes().length;
+
+        if (fwHelper.isPhotoWatchface()) {
+            final CmfWatchfacePrefs prefs = new CmfWatchfacePrefs(mSupport.getContext());
+            final CmfPhotoWatchface.Params params = prefs.getParams();
+            LOG.info("Sending photo watchface: size={}, style={}, position={},{}",
+                    fileSize, params.styleId, params.positionX, params.positionY);
+            return CmfPhotoWatchface.buildDescriptor(params, fileSize);
+        }
+
+        final ByteBuffer buf = ByteBuffer.allocate(9).order(ByteOrder.BIG_ENDIAN);
+        buf.put((byte) (0xa5));
+        buf.putInt(fileSize);
+        buf.putInt(new Random().nextInt()); // FIXME watchface ID?
+        return buf.array();
+    }
+
     private void handleChunkRequest(final CmfCommand commandReply, final byte[] payload) {
         final ByteBuffer buf = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN);
         final int offset = buf.getInt();
@@ -209,7 +232,7 @@ public class CmfDataUploader implements CmfCharacteristic.Handler {
         unsetDeviceBusy();
         updateProgress(100, false);
         mSupport.sendData("transfer finish", commandReply, (byte) 0xa5);
-}
+    }
 
     private void updateProgress(final int progressPercent, boolean ongoing) {
         final TransactionBuilder builder = mSupport.createTransactionBuilder("update data upload progress to " + progressPercent);
