@@ -37,14 +37,19 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * Foreground service that drives {@link CmfMicRecorder}.
+ * Foreground service that drives the recorder engines.
  *
- * <p>It also publishes a {@link MediaSession} while recording. That is a deliberate
- * shortcut: Gadgetbridge already mirrors the active media session to the watch
+ * <p>Two engines share {@link CmfMicRecorder.Listener} and {@link CmfMicRecorder.Result}:
+ * {@link CmfMicRecorder} writes WAV and measures the SCO link sample by sample, while
+ * {@link CmfCompressedRecorder} hands the same input to MediaRecorder for AAC. Which one runs is
+ * decided by {@link CmfRecorderPrefs#getFormat(Context)}, i.e. by the format picked on the
+ * recorder screen.</p>
+ *
+ * <p>It also publishes a {@link MediaSession} while recording. That is a deliberate shortcut:
+ * Gadgetbridge already mirrors the active media session to the watch
  * ({@code MUSIC_INFO_SET FFFF 905C}) and turns the watch music buttons
- * ({@code MUSIC_BUTTON FFFF A05D}) into media key events, so the recorder gets a status
- * line on the watch and a start/stop control without touching the device support class.
- * A direct hook in {@code CmfWatchProSupport} remains the deterministic follow up.</p>
+ * ({@code MUSIC_BUTTON FFFF A05D}) into media key events, so the recorder gets a status line on
+ * the watch and a start/stop control without touching the device support class.</p>
  *
  * <p>The service is declared in the debug source set only, see
  * {@code app/src/debug/AndroidManifest.xml} and {@code docs/CMF_MIC_RECORDER.md}.</p>
@@ -69,7 +74,8 @@ public class CmfMicRecorderService extends Service {
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
 
-    private CmfMicRecorder recorder;
+    private CmfMicRecorder wavRecorder;
+    private CmfCompressedRecorder compressedRecorder;
     private MediaSession mediaSession;
     private CmfRecorderStatus.State state = CmfRecorderStatus.State.IDLE;
     private long elapsedMillis;
@@ -81,8 +87,28 @@ public class CmfMicRecorderService extends Service {
 
     /** Convenience entry point for other components, for example the device support. */
     public static void dispatch(final Context context, final String action) {
+        dispatch(context, action, -1, false);
+    }
+
+    /**
+     * Starts or stops the recorder.
+     *
+     * @param durationSeconds stop automatically after this long, 0 for no limit, negative to use
+     *                        whatever is configured on the recorder screen
+     * @param usePhoneMic     control run: record the phone microphone without touching SCO
+     */
+    public static void dispatch(final Context context,
+                                final String action,
+                                final int durationSeconds,
+                                final boolean usePhoneMic) {
         final Intent intent = new Intent(context, CmfMicRecorderService.class);
         intent.setAction(action);
+        if (durationSeconds >= 0) {
+            intent.putExtra(EXTRA_DURATION_SECONDS, durationSeconds);
+        }
+        if (usePhoneMic) {
+            intent.putExtra(EXTRA_USE_PHONE_MIC, true);
+        }
 
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -98,6 +124,7 @@ public class CmfMicRecorderService extends Service {
     private final CmfMicRecorder.Listener recorderListener = new CmfMicRecorder.Listener() {
         @Override
         public void onStateChanged(final CmfRecorderStatus.State newState, final long elapsed) {
+            CmfRecorderState.setState(newState, elapsed);
             mainHandler.post(new Runnable() {
                 @Override
                 public void run() {
@@ -111,13 +138,23 @@ public class CmfMicRecorderService extends Service {
 
         @Override
         public void onFinished(final CmfMicRecorder.Result result) {
-            final String summary = result.verdict()
-                    + (result.audioFile != null ? "\n" + result.audioFile.getName() : "");
-            postToMain(summary);
+            // Still on the recorder thread, so the export may block.
+            final String exportTarget = exportIfConfigured(result);
+            publishResult(result, exportTarget);
+
+            final StringBuilder summary = new StringBuilder(result.verdict());
+            if (result.audioFile != null) {
+                summary.append('\n').append(result.audioFile.getName());
+            }
+            if (exportTarget != null) {
+                summary.append('\n').append(exportTarget);
+            }
+            postToMain(summary.toString());
         }
 
         @Override
         public void onFailed(final String reason, final CmfMicRecorder.Result partial) {
+            publishResult(partial, null);
             postToMain("FAILED: " + reason);
         }
 
@@ -134,7 +171,8 @@ public class CmfMicRecorderService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        recorder = new CmfMicRecorder(this, recorderListener);
+        wavRecorder = new CmfMicRecorder(this, recorderListener);
+        compressedRecorder = new CmfCompressedRecorder(this, recorderListener);
         createNotificationChannel();
         setupMediaSession();
     }
@@ -148,29 +186,31 @@ public class CmfMicRecorderService extends Service {
 
         startForegroundSafely();
 
-        if (ACTION_STOP.equals(action) || (ACTION_TOGGLE.equals(action) && recorder.isRunning())) {
-            if (recorder.isRunning()) {
-                recorder.stop();
+        if (ACTION_STOP.equals(action) || (ACTION_TOGGLE.equals(action) && isEngineRunning())) {
+            if (isEngineRunning()) {
+                stopEngines();
             } else {
                 finishSession("nothing was being recorded");
             }
             return START_NOT_STICKY;
         }
 
-        if (recorder.isRunning()) {
+        if (isEngineRunning()) {
             LOG.info("Already recording, ignoring {}", action);
             return START_NOT_STICKY;
         }
 
         final boolean selfTest = ACTION_SELF_TEST.equals(action);
-        final int defaultSeconds = selfTest ? SELF_TEST_DEFAULT_SECONDS : 0;
+        final int configuredSeconds = CmfRecorderPrefs.getDurationSeconds(this);
+        final int defaultSeconds = selfTest ? SELF_TEST_DEFAULT_SECONDS : configuredSeconds;
         final int durationSeconds = intent != null
                 ? intent.getIntExtra(EXTRA_DURATION_SECONDS, defaultSeconds)
                 : defaultSeconds;
-        final boolean usePhoneMic = intent != null
-                && intent.getBooleanExtra(EXTRA_USE_PHONE_MIC, false);
+        final boolean usePhoneMic = (intent != null
+                && intent.getBooleanExtra(EXTRA_USE_PHONE_MIC, false))
+                || (!selfTest && CmfRecorderPrefs.isPhoneMic(this));
 
-        if (!recorder.hasRecordPermission()) {
+        if (!wavRecorder.hasRecordPermission()) {
             finishSession("RECORD_AUDIO permission is not granted");
             return START_NOT_STICKY;
         }
@@ -178,11 +218,23 @@ public class CmfMicRecorderService extends Service {
         sessionActive = true;
         state = CmfRecorderStatus.State.CONNECTING;
         elapsedMillis = 0L;
+        CmfRecorderState.setState(state, 0L);
         updateMediaSession(true);
         updateNotification();
 
-        LOG.info("Starting recorder, duration {} s, phone mic {}", durationSeconds, usePhoneMic);
-        recorder.start(durationSeconds * 1000L, usePhoneMic);
+        // The self test always uses the WAV engine, its per sample statistics are the point.
+        final String format = selfTest
+                ? CmfRecorderPrefs.FORMAT_WAV
+                : CmfRecorderPrefs.getFormat(this);
+
+        LOG.info("Starting recorder, format {}, duration {} s, phone mic {}",
+                format, durationSeconds, usePhoneMic);
+
+        if (CmfRecorderPrefs.FORMAT_M4A.equals(format)) {
+            compressedRecorder.start(durationSeconds * 1000L, usePhoneMic);
+        } else {
+            wavRecorder.start(durationSeconds * 1000L, usePhoneMic);
+        }
 
         return START_NOT_STICKY;
     }
@@ -190,10 +242,7 @@ public class CmfMicRecorderService extends Service {
     @Override
     public void onDestroy() {
         sessionActive = false;
-
-        if (recorder != null) {
-            recorder.stop();
-        }
+        stopEngines();
 
         if (mediaSession != null) {
             try {
@@ -213,11 +262,65 @@ public class CmfMicRecorderService extends Service {
         return null;
     }
 
+    private boolean isEngineRunning() {
+        return (wavRecorder != null && wavRecorder.isRunning())
+                || (compressedRecorder != null && compressedRecorder.isRunning());
+    }
+
+    private void stopEngines() {
+        if (wavRecorder != null) {
+            wavRecorder.stop();
+        }
+        if (compressedRecorder != null) {
+            compressedRecorder.stop();
+        }
+    }
+
+    /** Copies the audio file, and the report next to it, into the configured output folder. */
+    private String exportIfConfigured(final CmfMicRecorder.Result result) {
+        final String folderUri = CmfRecorderPrefs.getFolderUri(this);
+        if (folderUri == null || result == null || result.audioFile == null) {
+            return null;
+        }
+
+        final String mimeType = CmfRecorderPrefs.mimeFor(
+                result.audioFile.getName().endsWith(".m4a")
+                        ? CmfRecorderPrefs.FORMAT_M4A
+                        : CmfRecorderPrefs.FORMAT_WAV
+        );
+
+        final String target = CmfRecorderExporter.export(this, result.audioFile, mimeType, folderUri);
+        if (target == null) {
+            LOG.warn("Export failed, the recording stays in app storage");
+            return null;
+        }
+
+        if (result.reportFile != null) {
+            CmfRecorderExporter.export(this, result.reportFile, "text/plain", folderUri);
+        }
+
+        return target;
+    }
+
+    private void publishResult(final CmfMicRecorder.Result result, final String exportTarget) {
+        if (result == null) {
+            return;
+        }
+
+        CmfRecorderState.setResult(
+                result.toReport(),
+                result.verdict(),
+                result.audioFile != null ? result.audioFile.getName() : "",
+                exportTarget
+        );
+    }
+
     private void finishSession(final String summary) {
         LOG.info("Recorder session finished: {}", summary);
 
         sessionActive = false;
         state = CmfRecorderStatus.State.STOPPED;
+        CmfRecorderState.setState(state, 0L);
         updateMediaSession(false);
         postResultNotification(summary);
 
@@ -238,7 +341,7 @@ public class CmfMicRecorderService extends Service {
             }
         } catch (final Exception e) {
             // Android 12+ refuses background starts of microphone services in some states;
-            // open Gadgetbridge in the foreground first, then retry.
+            // starting from the recorder screen always works.
             LOG.error("Could not enter the foreground", e);
         }
     }
@@ -271,6 +374,11 @@ public class CmfMicRecorderService extends Service {
                 .setStyle(new Notification.BigTextStyle().bigText(summary))
                 .setAutoCancel(true);
 
+        final PendingIntent openIntent = activityPendingIntent();
+        if (openIntent != null) {
+            builder.setContentIntent(openIntent);
+        }
+
         try {
             manager.notify(NOTIFICATION_ID_RESULT, builder.build());
         } catch (final Exception e) {
@@ -287,6 +395,11 @@ public class CmfMicRecorderService extends Service {
                 .setOngoing(true)
                 .setOnlyAlertOnce(true)
                 .setVisibility(Notification.VISIBILITY_PUBLIC);
+
+        final PendingIntent openIntent = activityPendingIntent();
+        if (openIntent != null) {
+            builder.setContentIntent(openIntent);
+        }
 
         final PendingIntent stopIntent = servicePendingIntent(ACTION_STOP);
         if (stopIntent != null) {
@@ -305,6 +418,25 @@ public class CmfMicRecorderService extends Service {
             return new Notification.Builder(this, CHANNEL_ID);
         }
         return new Notification.Builder(this);
+    }
+
+    private PendingIntent activityPendingIntent() {
+        int pendingFlags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            pendingFlags |= PendingIntent.FLAG_IMMUTABLE;
+        }
+
+        try {
+            return PendingIntent.getActivity(
+                    this,
+                    CmfRecorderActivity.ACTION_OPEN.hashCode(),
+                    CmfRecorderActivity.openIntent(this),
+                    pendingFlags
+            );
+        } catch (final Exception e) {
+            LOG.debug("Could not build the recorder screen intent", e);
+            return null;
+        }
     }
 
     private PendingIntent servicePendingIntent(final String action) {
