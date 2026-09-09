@@ -95,9 +95,13 @@
             Android forbids passing file URIs between components, so the built watchface is handed
             to the install screen as a content URI. The provider is not exported and only grants
             access per intent.
+
+            The class is our own subclass of FileProvider on purpose. Gadgetbridge already declares
+            androidx.core.content.FileProvider for screenshots, and the manifest merger treats two
+            declarations of the same provider class as a conflict.
         -->
         <provider
-            android:name="androidx.core.content.FileProvider"
+            android:name="nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.watchface.CmfWatchfaceFileProvider"
             android:authorities="${applicationId}.cmf.watchface.files"
             android:exported="false"
             android:grantUriPermissions="true">
