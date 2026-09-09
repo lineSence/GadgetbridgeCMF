@@ -1,29 +1,50 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Debug-only manifest additions for the CMF Watch Pro 2 microphone recorder PoC.
+    Debug only additions for the CMF microphone recorder PoC.
 
-  This source set is merged into debug variants only, so release builds keep
-  their original permission set and do not ship the recorder service.
-  Before promoting the PoC to a shipping feature, move these entries into
-  app/src/main/AndroidManifest.xml and set android:exported="false".
+    Everything here is merged into debug builds only, so release builds gain no new
+    permissions and no new components. See docs/CMF_MIC_RECORDER.md.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Records audio from the watch microphone over the Bluetooth SCO link. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application>
+
         <!--
-          exported="true" only so the PoC can be driven from adb:
-            adb shell am start-foreground-service -n <pkg>/nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.recorder.CmfMicRecorderService -a nodomain.freeyourgadget.gadgetbridge.cmf.recorder.SELFTEST
+            The recorder screen: start/stop, SCO self test, duration, format and output folder.
+            It is exported and has a launcher entry so the PoC can be driven entirely from the
+            phone, without adb.
         -->
+        <activity
+            android:name="nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.recorder.CmfRecorderActivity"
+            android:exported="true"
+            android:label="CMF диктофон"
+            android:launchMode="singleTop"
+            android:theme="@android:style/Theme.DeviceDefault">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Used by the "Диктофон" entry in the watch settings, no class name needed there. -->
+            <intent-filter>
+                <action android:name="nodomain.freeyourgadget.gadgetbridge.cmf.recorder.OPEN" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <service
             android:name="nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.recorder.CmfMicRecorderService"
             android:exported="true"
             android:foregroundServiceType="microphone" />
+
     </application>
 
 </manifest>
