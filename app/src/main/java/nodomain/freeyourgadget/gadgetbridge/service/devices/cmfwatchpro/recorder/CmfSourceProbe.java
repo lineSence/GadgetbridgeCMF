@@ -48,7 +48,14 @@ import java.util.Locale;
  * non-zero samples each combination produced, so the next step can be decided from data
  * instead of guesswork.</p>
  *
- * <p>{@link #run(Context, int, boolean)} blocks for roughly
+ * <p>Measurements on a CMF Watch Pro 2 with firmware 1.0.0.73 showed silence across the whole
+ * matrix in both audio modes, with a peak of a few LSBs of quantisation noise. That points at
+ * the microphone being gated on the hands-free call indicators rather than on SCO, which is
+ * what {@link CmfTelecomCallShim} addresses: pass {@code useTelecomCall} and the sweep runs
+ * inside a self-managed Telecom call, so the platform tells the watch that a call is in
+ * progress.</p>
+ *
+ * <p>{@link #run(Context, int, boolean, boolean)} blocks for roughly
  * {@code millisPerCombo * combinations} and must be called from a background thread while the
  * recorder screen is in the foreground, otherwise the microphone access is denied.</p>
  */
@@ -56,6 +63,9 @@ public final class CmfSourceProbe {
     private static final Logger LOG = LoggerFactory.getLogger(CmfSourceProbe.class);
 
     public static final int DEFAULT_MILLIS_PER_COMBO = 2500;
+
+    /** How long to wait for the self-managed call to become active. */
+    private static final long CALL_TIMEOUT_MILLIS = 6000L;
 
     /** Capture presets worth trying, in the order in which they are most likely to work. */
     private static final int[] SOURCES = {
@@ -83,8 +93,17 @@ public final class CmfSourceProbe {
 
     private static final String FILE_PREFIX = "cmf-probe-";
 
+    /** Anything below this is indistinguishable from an empty stream. */
+    private static final int NOISE_FLOOR = 32;
+
     private CmfSourceProbe() {
         // static helper
+    }
+
+    /** Backwards compatible entry point: sweeps over a plain SCO link. */
+    public static String run(final Context context, final int millisPerCombo,
+                             final boolean inCallMode) {
+        return run(context, millisPerCombo, inCallMode, false);
     }
 
     /**
@@ -93,10 +112,13 @@ public final class CmfSourceProbe {
      * @param millisPerCombo how long to capture per combination
      * @param inCallMode     when true, the audio mode is forced to {@code MODE_IN_CALL} instead of
      *                       {@code MODE_IN_COMMUNICATION}, which some firmwares need before they
-     *                       open the microphone
+     *                       open the microphone. Ignored when {@code useTelecomCall} is set,
+     *                       because Telecom owns the audio mode then.
+     * @param useTelecomCall when true, a self-managed Telecom call is placed first, so the watch
+     *                       is told that a call is in progress
      */
     public static String run(final Context context, final int millisPerCombo,
-                             final boolean inCallMode) {
+                             final boolean inCallMode, final boolean useTelecomCall) {
         final AudioManager audioManager =
                 (AudioManager) context.getSystemService(Context.AUDIO_SERVICE);
         final StringBuilder report = new StringBuilder();
@@ -104,37 +126,81 @@ public final class CmfSourceProbe {
         report.append("device=").append(Build.MANUFACTURER).append(' ').append(Build.MODEL)
                 .append("\nandroid=").append(Build.VERSION.RELEASE)
                 .append(" (API ").append(Build.VERSION.SDK_INT).append(")\n");
-        report.append("mode=").append(inCallMode ? "MODE_IN_CALL" : "MODE_IN_COMMUNICATION")
+        report.append("strategy=").append(useTelecomCall
+                        ? "self-managed Telecom call"
+                        : (inCallMode ? "MODE_IN_CALL" : "MODE_IN_COMMUNICATION"))
                 .append('\n');
         report.append("millisPerCombo=").append(millisPerCombo).append('\n');
 
         final CmfScoAudioLink link = new CmfScoAudioLink(context);
         report.append("scoOffCallSupported=").append(link.isScoAvailableOffCall()).append('\n');
 
+        boolean linkAcquired = false;
+        boolean callPlaced = false;
+
         try {
-            final boolean up = link.acquireBlocking(CmfScoAudioLink.DEFAULT_TIMEOUT_MILLIS);
-            report.append("scoUp=").append(up)
-                    .append("\nscoRoute=").append(link.getRoute())
-                    .append("\nscoConnectMillis=").append(link.getConnectMillis())
-                    .append("\nscoInputAvailable=").append(link.isScoInputAvailable())
-                    .append('\n');
+            if (useTelecomCall) {
+                if (!CmfTelecomCallShim.isSupported()) {
+                    report.append("telecom=недоступен, нужен Android 8.0+\n");
+                    return report.toString();
+                }
 
-            if (link.getFailureReason() != null) {
-                report.append("failureReason=").append(link.getFailureReason()).append('\n');
-            }
+                final String error = CmfTelecomCallShim.startCall(context);
+                if (error != null) {
+                    report.append("telecomError=").append(error).append('\n');
+                    return report.toString();
+                }
 
-            if (!up) {
-                report.append("\nSCO-канал не поднялся, матрицу источников проверять бессмысленно.\n");
-                return report.toString();
-            }
+                callPlaced = true;
+                final boolean callActive = CmfTelecomCallShim.awaitActive(CALL_TIMEOUT_MILLIS);
+                CmfTelecomCallShim.routeToBluetooth();
 
-            if (inCallMode && audioManager != null) {
-                try {
-                    audioManager.setMode(AudioManager.MODE_IN_CALL);
-                    report.append("setModeInCall=ok, effective=")
-                            .append(audioManager.getMode()).append('\n');
-                } catch (final Exception e) {
-                    report.append("setModeInCall=rejected: ").append(e.getMessage()).append('\n');
+                // Telecom needs a moment to hand the audio over to the headset.
+                sleep(1500L);
+
+                report.append("callActive=").append(callActive)
+                        .append("\ncallRoute=").append(CmfTelecomCallShim.describeRoute())
+                        .append("\naudioMode=").append(audioManager != null
+                                ? audioManager.getMode() : -1)
+                        .append("\nbluetoothScoOn=").append(audioManager != null
+                                && audioManager.isBluetoothScoOn())
+                        .append("\nscoInputAvailable=").append(link.isScoInputAvailable())
+                        .append('\n');
+
+                if (CmfTelecomCallShim.getLastError() != null) {
+                    report.append("telecomError=")
+                            .append(CmfTelecomCallShim.getLastError()).append('\n');
+                }
+
+                if (!callActive) {
+                    report.append("\nЗвонок не стал активным, результаты ниже недостоверны.\n");
+                }
+            } else {
+                linkAcquired = link.acquireBlocking(CmfScoAudioLink.DEFAULT_TIMEOUT_MILLIS);
+                report.append("scoUp=").append(linkAcquired)
+                        .append("\nscoRoute=").append(link.getRoute())
+                        .append("\nscoConnectMillis=").append(link.getConnectMillis())
+                        .append("\nscoInputAvailable=").append(link.isScoInputAvailable())
+                        .append('\n');
+
+                if (link.getFailureReason() != null) {
+                    report.append("failureReason=").append(link.getFailureReason()).append('\n');
+                }
+
+                if (!linkAcquired) {
+                    report.append("\nSCO-канал не поднялся, матрицу источников проверять бессмысленно.\n");
+                    return report.toString();
+                }
+
+                if (inCallMode && audioManager != null) {
+                    try {
+                        audioManager.setMode(AudioManager.MODE_IN_CALL);
+                        report.append("setModeInCall=ok, effective=")
+                                .append(audioManager.getMode()).append('\n');
+                    } catch (final Exception e) {
+                        report.append("setModeInCall=rejected: ")
+                                .append(e.getMessage()).append('\n');
+                    }
                 }
             }
 
@@ -150,8 +216,8 @@ public final class CmfSourceProbe {
 
             for (int s = 0; s < SOURCES.length; s++) {
                 for (final int sampleRate : SAMPLE_RATES) {
-                    final Probe probe = probeOne(
-                            SOURCES[s], sampleRate, millisPerCombo, scoInput, link);
+                    final Probe probe = probeOne(SOURCES[s], sampleRate, millisPerCombo, scoInput,
+                            linkAcquired ? link : null);
 
                     report.append(String.format(
                             Locale.ROOT,
@@ -173,14 +239,16 @@ public final class CmfSourceProbe {
             }
 
             report.append('\n');
-            if (bestPeak <= 0) {
-                report.append("verdict=молчат все комбинации: телефон получает SCO-кадры, "
-                        + "но часы не открывают микрофон вне звонка. "
-                        + "Остаётся путь через имитацию входящего звонка.\n");
+            if (bestPeak <= NOISE_FLOOR) {
+                report.append(String.format(Locale.ROOT,
+                        "verdict=тишина во всех комбинациях (максимум peak=%d, шум квантования). %s%n",
+                        bestPeak,
+                        useTelecomCall
+                                ? "Даже в режиме звонка часы не отдают микрофон."
+                                : "Попробуйте скан с имитацией звонка."));
             } else if (bestPeak < 328) {
                 report.append(String.format(Locale.ROOT,
-                        "verdict=почти тишина, максимум peak=%d на %s. "
-                                + "Похоже на пустой поток с шумом квантования.%n",
+                        "verdict=почти тишина, максимум peak=%d на %s.%n",
                         bestPeak, bestCombo));
             } else {
                 report.append(String.format(Locale.ROOT,
@@ -191,6 +259,9 @@ public final class CmfSourceProbe {
             LOG.warn("Probe failed", e);
             report.append("probeError=").append(e).append('\n');
         } finally {
+            if (callPlaced) {
+                CmfTelecomCallShim.endCall();
+            }
             link.release();
         }
 
@@ -269,7 +340,7 @@ public final class CmfSourceProbe {
                 probe.silentRatio = (float) silentSamples / (float) samples;
             }
 
-            if (!link.isConnected() && probe.note == null) {
+            if (link != null && !link.isConnected() && probe.note == null) {
                 probe.note = "SCO отвалился";
             }
         } catch (final Exception e) {
@@ -289,6 +360,14 @@ public final class CmfSourceProbe {
         }
 
         return probe;
+    }
+
+    private static void sleep(final long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     private static AudioDeviceInfo findScoInput(final AudioManager audioManager) {
