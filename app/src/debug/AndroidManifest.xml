@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-    Debug only additions for the CMF microphone recorder PoC.
+    Debug only additions for the CMF tooling: the microphone recorder PoC and the watchface
+    editor.
 
     Everything here is merged into debug builds only, so release builds gain no new
-    permissions and no new components. See docs/CMF_MIC_RECORDER.md.
+    permissions and no new components. See docs/CMF_MIC_RECORDER.md and docs/CMF_WATCHFACES.md.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
@@ -47,6 +48,29 @@
             </intent-filter>
         </activity>
 
+        <!--
+            The watchface editor: pick a photo, place the clock overlay, build the file and hand it
+            to the normal install flow. Also has a launcher entry so it can be opened directly.
+        -->
+        <activity
+            android:name="nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.watchface.CmfWatchfaceEditorActivity"
+            android:exported="true"
+            android:label="CMF циферблаты"
+            android:launchMode="singleTop"
+            android:theme="@android:style/Theme.DeviceDefault">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Used by the "Циферблаты" entry in the watch settings. -->
+            <intent-filter>
+                <action android:name="nodomain.freeyourgadget.gadgetbridge.cmf.watchface.OPEN" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
         <service
             android:name="nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.recorder.CmfMicRecorderService"
             android:exported="true"
@@ -66,6 +90,22 @@
                 <action android:name="android.telecom.ConnectionService" />
             </intent-filter>
         </service>
+
+        <!--
+            Android forbids passing file URIs between components, so the built watchface is handed
+            to the install screen as a content URI. The provider is not exported and only grants
+            access per intent.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.cmf.watchface.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/cmf_watchface_paths" />
+        </provider>
 
     </application>
 
