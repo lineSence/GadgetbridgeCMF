@@ -58,8 +58,9 @@ import java.util.Locale;
 
 /**
  * Everything the microphone PoC needs, without adb: start and stop a recording, run the SCO
- * self test, pick the duration, the output format and the output folder, and read the report of
- * the last run right on the phone.
+ * self test, sweep the capture presets and sample rates when the link is up but silent, pick the
+ * duration, the output format and the output folder, and read the report of the last run right on
+ * the phone.
  *
  * <p>The UI is built in code on purpose. The screen ships in the debug source set only (see
  * {@code app/src/debug/AndroidManifest.xml}), and building it programmatically keeps it from
@@ -86,6 +87,11 @@ public class CmfRecorderActivity extends Activity implements CmfRecorderState.Li
     private TextView filesView;
     private Button recordButton;
     private CheckBox phoneMicCheckBox;
+
+    /** Set while {@link CmfSourceProbe} is walking the matrix on a background thread. */
+    private volatile boolean probeRunning;
+    /** Last sweep report, shown instead of the recorder report until the next recording. */
+    private volatile String probeReport;
 
     private final Runnable refreshTicker = new Runnable() {
         @Override
@@ -165,6 +171,26 @@ public class CmfRecorderActivity extends Activity implements CmfRecorderState.Li
                 CmfMicRecorderService.dispatch(CmfRecorderActivity.this,
                         CmfMicRecorderService.ACTION_SELF_TEST, 10, true);
                 toast("Контрольный прогон запущен");
+            }
+        });
+
+        addSectionTitle(root, "Диагностика тишины");
+        addTextView(root, "Если канал поднимается, но запись пустая: перебор источников записи "
+                        + "и частот (16 кГц mSBC и 8 кГц CVSD) по 2,5 секунды на комбинацию. "
+                        + "Говорите в часы всё время скана и не выходите с этого экрана.",
+                12f, false);
+
+        addButton(root, "Скан источников (MODE_IN_COMMUNICATION)", new View.OnClickListener() {
+            @Override
+            public void onClick(final View v) {
+                startProbe(false);
+            }
+        });
+
+        addButton(root, "Скан источников (MODE_IN_CALL)", new View.OnClickListener() {
+            @Override
+            public void onClick(final View v) {
+                startProbe(true);
             }
         });
 
@@ -316,9 +342,16 @@ public class CmfRecorderActivity extends Activity implements CmfRecorderState.Li
             return;
         }
 
+        if (probeRunning) {
+            toast("Дождитесь окончания скана");
+            return;
+        }
+
         if (!ensurePermissions()) {
             return;
         }
+
+        probeReport = null;
 
         CmfMicRecorderService.dispatch(
                 this,
@@ -326,6 +359,72 @@ public class CmfRecorderActivity extends Activity implements CmfRecorderState.Li
                 CmfRecorderPrefs.getDurationSeconds(this),
                 CmfRecorderPrefs.isPhoneMic(this)
         );
+    }
+
+    /**
+     * Walks the capture preset and sample rate matrix on a background thread. The screen stays in
+     * the foreground for the whole run, which is what keeps the microphone accessible without a
+     * foreground service.
+     */
+    private void startProbe(final boolean inCallMode) {
+        if (probeRunning) {
+            toast("Скан уже идёт");
+            return;
+        }
+
+        if (CmfRecorderState.isBusy() || CmfMicRecorderService.isRecordingSessionActive()) {
+            toast("Сначала остановите запись");
+            return;
+        }
+
+        if (!ensurePermissions()) {
+            return;
+        }
+
+        probeRunning = true;
+        probeReport = "Скан идёт, говорите в часы…\n";
+        refresh();
+        toast("Скан запущен, говорите в часы");
+
+        final Context context = getApplicationContext();
+        final String folderUri = CmfRecorderPrefs.getFolderUri(this);
+
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String result;
+                try {
+                    result = CmfSourceProbe.run(
+                            context, CmfSourceProbe.DEFAULT_MILLIS_PER_COMBO, inCallMode);
+                } catch (final Throwable t) {
+                    LOG.warn("Probe crashed", t);
+                    result = "probeError=" + t + "\n";
+                }
+
+                final File file = CmfSourceProbe.writeReport(context, result);
+                if (file != null) {
+                    result = result + "reportFile=" + file.getAbsolutePath() + "\n";
+
+                    if (folderUri != null) {
+                        final String exported = CmfRecorderExporter.export(
+                                context, file, "text/plain", folderUri);
+                        if (exported != null) {
+                            result = result + "exportedTo=" + exported + "\n";
+                        }
+                    }
+                }
+
+                final String finalResult = result;
+                handler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        probeRunning = false;
+                        probeReport = finalResult;
+                        refresh();
+                    }
+                });
+            }
+        }, "cmf-source-probe").start();
     }
 
     private void pickFolder() {
@@ -416,8 +515,8 @@ public class CmfRecorderActivity extends Activity implements CmfRecorderState.Li
         final boolean busy = CmfRecorderState.isBusy()
                 || CmfMicRecorderService.isRecordingSessionActive();
 
-        statusView.setText(describeState());
-        statusView.setTextColor(busy ? Color.RED : Color.GRAY);
+        statusView.setText(probeRunning ? "Идёт скан источников…" : describeState());
+        statusView.setTextColor(busy || probeRunning ? Color.RED : Color.GRAY);
         timerView.setText(CmfRecorderStatus.formatElapsed(CmfRecorderState.getElapsedMillis()));
         recordButton.setText(busy ? "Остановить запись" : "Начать запись");
 
@@ -426,7 +525,8 @@ public class CmfRecorderActivity extends Activity implements CmfRecorderState.Li
                 ? CmfRecorderExporter.describe(folderUri)
                 : "память приложения: " + CmfMicRecorder.defaultOutputDir(this).getAbsolutePath());
 
-        reportView.setText(lastReport());
+        final String probe = probeReport;
+        reportView.setText(probe != null ? probe : lastReport());
         filesView.setText(listRecordings());
     }
 
