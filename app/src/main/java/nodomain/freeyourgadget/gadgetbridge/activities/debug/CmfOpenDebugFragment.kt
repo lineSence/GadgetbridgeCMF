@@ -1,11 +1,14 @@
 package nodomain.freeyourgadget.gadgetbridge.activities.debug
 
 import android.os.Bundle
+import android.widget.Toast
 import nodomain.freeyourgadget.gadgetbridge.GBApplication
 import nodomain.freeyourgadget.gadgetbridge.R
+import nodomain.freeyourgadget.gadgetbridge.devices.cmfwatchpro.CmfWatchProCoordinator
 import nodomain.freeyourgadget.gadgetbridge.model.Alarm
 import nodomain.freeyourgadget.gadgetbridge.model.Contact
 import nodomain.freeyourgadget.gadgetbridge.model.RecordedDataTypes
+import nodomain.freeyourgadget.gadgetbridge.util.GB
 
 /**
  * CMFOPEN protocol smoke tests integrated into Gadgetbridge's existing Debug Activity.
@@ -16,13 +19,13 @@ class CmfOpenDebugFragment : AbstractDebugFragment() {
         setPreferencesFromResource(R.xml.debug_preferences_cmfopen, rootKey)
 
         onClick(PREF_TIME) {
-            runOnDebugDevices(title = getString(R.string.choose_device)) { device ->
+            runOnCmfDevice { device ->
                 GBApplication.deviceService(device).onSetTime()
             }
         }
 
         onClick(PREF_CONTACTS) {
-            runOnDebugDevices(title = getString(R.string.choose_device)) { device ->
+            runOnCmfDevice { device ->
                 val contacts = arrayListOf<Contact>(
                     object : Contact {
                         override fun getContactId() = "cmfopen-test"
@@ -35,7 +38,7 @@ class CmfOpenDebugFragment : AbstractDebugFragment() {
         }
 
         onClick(PREF_ALARMS) {
-            runOnDebugDevices(title = getString(R.string.choose_device)) { device ->
+            runOnCmfDevice { device ->
                 val alarms = arrayListOf<Alarm>(
                     object : Alarm {
                         override fun getPosition() = 0
@@ -60,9 +63,24 @@ class CmfOpenDebugFragment : AbstractDebugFragment() {
         }
 
         onClick(PREF_ACTIVITY) {
-            runOnDebugDevices(title = getString(R.string.choose_device)) { device ->
+            runOnCmfDevice { device ->
                 GBApplication.deviceService(device).onFetchRecordedData(RecordedDataTypes.TYPE_ACTIVITY)
             }
+        }
+    }
+
+    private fun runOnCmfDevice(function: (nodomain.freeyourgadget.gadgetbridge.impl.GBDevice) -> Unit) {
+        runOnDebugDevices(title = getString(R.string.choose_device)) { device ->
+            if (device.deviceCoordinator !is CmfWatchProCoordinator) {
+                GB.toast(
+                    requireContext(),
+                    "CMFOPEN tests are only available for CMF Watch Pro 2",
+                    Toast.LENGTH_LONG,
+                    GB.WARN
+                )
+                return@runOnDebugDevices
+            }
+            function(device)
         }
     }
 
