@@ -16,13 +16,13 @@ class CmfOpenDebugFragment : AbstractDebugFragment() {
         setPreferencesFromResource(R.xml.debug_preferences_cmfopen, rootKey)
 
         onClick(PREF_TIME) {
-            runOnDebugDevices(title = getString(R.string.cmfopen_choose_device)) { device ->
+            runOnDebugDevices(title = getString(R.string.choose_device)) { device ->
                 GBApplication.deviceService(device).onSetTime()
             }
         }
 
         onClick(PREF_CONTACTS) {
-            runOnDebugDevices(title = getString(R.string.cmfopen_choose_device)) { device ->
+            runOnDebugDevices(title = getString(R.string.choose_device)) { device ->
                 val contacts = arrayListOf<Contact>(
                     object : Contact {
                         override fun getContactId() = "cmfopen-test"
@@ -35,7 +35,7 @@ class CmfOpenDebugFragment : AbstractDebugFragment() {
         }
 
         onClick(PREF_ALARMS) {
-            runOnDebugDevices(title = getString(R.string.cmfopen_choose_device)) { device ->
+            runOnDebugDevices(title = getString(R.string.choose_device)) { device ->
                 val alarms = arrayListOf<Alarm>(
                     object : Alarm {
                         override fun getPosition() = 0
@@ -60,7 +60,7 @@ class CmfOpenDebugFragment : AbstractDebugFragment() {
         }
 
         onClick(PREF_ACTIVITY) {
-            runOnDebugDevices(title = getString(R.string.cmfopen_choose_device)) { device ->
+            runOnDebugDevices(title = getString(R.string.choose_device)) { device ->
                 GBApplication.deviceService(device).onFetchRecordedData(RecordedDataTypes.TYPE_ACTIVITY)
             }
         }
