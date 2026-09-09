@@ -41,6 +41,8 @@ import nodomain.freeyourgadget.gadgetbridge.model.ActivityUser;
 import nodomain.freeyourgadget.gadgetbridge.model.DistanceUnit;
 import nodomain.freeyourgadget.gadgetbridge.model.TemperatureUnit;
 import nodomain.freeyourgadget.gadgetbridge.service.btle.TransactionBuilder;
+import nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.watchface.CmfDialList;
+import nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.watchface.CmfWatchfaceSlots;
 import nodomain.freeyourgadget.gadgetbridge.util.Prefs;
 
 public class CmfPreferences {
@@ -116,6 +118,15 @@ public class CmfPreferences {
             case DeviceSettingsPreferenceConst.PREF_BLUETOOTH_CALLS_ENABLED:
                 setCallReminders(builder);
                 break;
+            case CmfWatchfaceSlots.CONFIG_DIAL_LIST_REFRESH:
+                requestDialList(builder);
+                break;
+            case CmfWatchfaceSlots.CONFIG_DIAL_ACTIVATE:
+                activateSelectedDial(builder);
+                break;
+            case CmfWatchfaceSlots.CONFIG_DIAL_DELETE:
+                deleteSelectedDial(builder);
+                break;
             default:
                 LOG.warn("Unknown config changed: {}", config);
         }
@@ -123,6 +134,67 @@ public class CmfPreferences {
         if (!builder.isEmpty()) {
             builder.queue();
         }
+    }
+
+    /** Asks the watch which watchfaces are installed. The answer arrives as DIAL_LIST_RET. */
+    public void requestDialList(final TransactionBuilder builder) {
+        LOG.debug("Requesting the dial list");
+        mSupport.sendCommand(builder, CmfCommand.DIAL_LIST_SET, CmfDialList.buildQuery());
+    }
+
+    /**
+     * Makes the selected watchface active. The watch has no dedicated command for this: the phone
+     * writes the whole list back with the wanted watchface first.
+     */
+    private void activateSelectedDial(final TransactionBuilder builder) {
+        final CmfWatchfaceSlots slots = new CmfWatchfaceSlots(mSupport.getContext());
+        final List<Integer> ids = slots.getIds();
+
+        if (!slots.hasTarget() || ids.isEmpty()) {
+            LOG.warn("No dial selected, or the list was never read");
+            return;
+        }
+
+        final int target = slots.getTargetId();
+        if (!ids.contains(target)) {
+            LOG.warn("Dial {} is not in the list any more", target);
+            return;
+        }
+
+        LOG.info("Activating dial {}", target);
+        mSupport.sendCommand(builder, CmfCommand.DIAL_LIST_SET,
+                CmfDialList.buildOrder(CmfDialList.activeFirst(ids, target)));
+        requestDialList(builder);
+    }
+
+    /**
+     * Deletes the selected watchface by writing the list back without it. This is also how the
+     * official app frees a slot before it uploads a new watchface.
+     */
+    private void deleteSelectedDial(final TransactionBuilder builder) {
+        final CmfWatchfaceSlots slots = new CmfWatchfaceSlots(mSupport.getContext());
+        final List<Integer> ids = slots.getIds();
+
+        if (!slots.hasTarget() || ids.isEmpty()) {
+            LOG.warn("No dial selected, or the list was never read");
+            return;
+        }
+
+        final int target = slots.getTargetId();
+        final List<Integer> remaining = CmfDialList.withoutId(ids, target);
+        if (remaining.size() == ids.size()) {
+            LOG.warn("Dial {} is not in the list any more", target);
+            return;
+        }
+
+        if (remaining.isEmpty()) {
+            LOG.warn("Refusing to delete the last dial on the watch");
+            return;
+        }
+
+        LOG.info("Deleting dial {}, {} left", target, remaining.size());
+        mSupport.sendCommand(builder, CmfCommand.DIAL_LIST_SET, CmfDialList.buildOrder(remaining));
+        requestDialList(builder);
     }
 
     protected void setGoals(final TransactionBuilder builder) {
@@ -374,8 +446,32 @@ public class CmfPreferences {
     }
 
     protected boolean onCommand(final CmfCommand cmd, final byte[] payload) {
-        // TODO handle preference replies from watch
+        if (cmd == CmfCommand.DIAL_LIST_RET) {
+            handleDialList(payload);
+            return true;
+        }
+
+        // TODO handle the remaining preference replies from the watch
         return false;
+    }
+
+    /**
+     * Stores the watchface list the watch just reported. The watchface screens read it from there,
+     * because they cannot talk to the watch themselves.
+     */
+    private void handleDialList(final byte[] payload) {
+        final CmfDialList.Dials dials = CmfDialList.parse(payload);
+
+        LOG.info("Got dial list: result={} active={} total={} max={} ids={}",
+                dials.result, dials.activeIndex, dials.total, dials.max, dials.ids);
+
+        final Context context = mSupport.getContext();
+        if (context == null) {
+            LOG.warn("No context, dial list not stored");
+            return;
+        }
+
+        new CmfWatchfaceSlots(context).save(dials);
     }
 
     private static final Map<String, String> LANGUAGES = new HashMap<>() {{
@@ -388,7 +484,7 @@ public class CmfPreferences {
         put("in", "id_ID");
         put("it", "it_IT");
         put("ja", "ja_JP");
-        put("ko", "ko_KO");
+        put("ko", "ko_KR");
         put("zh_cn", "zh_CN");
         put("zh_hk", "zh_HK");
     }};
