@@ -1,165 +1,159 @@
-# CMF диктофон — PoC записи через микрофон часов (SCO)
+# Диктофон CMF Watch Pro 2 — PoC и инструкция по проверке
 
-Контекст и теория — в [`CMF_CAPABILITIES.md`](CMF_CAPABILITIES.md), раздел 3.1.
+Цель PoC — ответить на один вопрос, который нельзя решить чтением документации:
+**отдаёт ли часовой микрофон звук по Bluetooth SCO вне телефонного звонка.**
+Если да — часы можно превратить в полноценный диктофон. Если нет — остаётся только обход
+через имитацию звонка (`INCOMING_CALL 0064 0001`), что уже другая задача.
 
-Цель PoC: **проверить на живом устройстве, даёт ли CMF Watch Pro 2 поднять SCO-канал вне звонка** и пишется ли реальный звук с её микрофона (а не тишина и не микрофон телефона). Прошивка часов не затрагивается.
+Всё проверяется **с телефона, adb не нужен**.
 
 ---
 
-## 1. Состав
+## 1. Как получить сборку
+
+Сборка делается в GitHub Actions (workflow `CMF P0 build`) на каждый PR в `master`.
+
+1. Откройте вкладку **Actions** → последний успешный запуск ветки `feature/cmf-mic-recorder`.
+2. Внизу страницы — артефакт `GadgetbridgeCMF-P0-debug-apk` (zip со всеми флейворами).
+3. Внутри нужен **`app-mainline-debug.apk`**.
+4. Скачайте zip прямо на телефон, распакуйте любым файловым менеджером и установите APK.
+
+> Если установка выдаёт `INSTALL_FAILED_UPDATE_INCOMPATIBLE`, значит уже стоит Gadgetbridge с другой
+> подписью (например, из F-Droid). Сначала сделайте экспорт базы в старом приложении,
+> удалите его, потом ставьте debug-сборку.
+
+---
+
+## 2. Подготовка часов (самый важный шаг)
+
+SCO — это канал **классического** Bluetooth (профиль HFP), а Gadgetbridge работает по BLE.
+Это два разных подключения, и нужны оба:
+
+1. В системных настройках Bluetooth часы должны быть сопряжены и показывать
+   «Звонки / Аудио телефона» (Bluetooth-звонки на часах включены).
+2. В Gadgetbridge часы подключены как обычно (BLE).
+
+Если первого нет — самотест честно напишет `headsetConnected=false`, и это не баг приложения.
+
+---
+
+## 3. Где открыть диктофон
+
+Два равнозначных пути:
+
+* **Из настроек часов:** Gadgetbridge → карточка устройства → шестерёнка → раздел
+  **«Диктофон» → «Диктофон часов»**.
+* **С рабочего стола:** отдельная иконка **«CMF диктофон»** (появляется только в debug-сборке).
+
+При первом запуске экран сам запросит разрешения: микрофон, Bluetooth, уведомления.
+Все три нужно разрешить.
+
+---
+
+## 4. Что есть на экране
+
+| Элемент | Назначение |
+|---|---|
+| Статус и таймер | «Готов» / «Поднимаем SCO…» / «Идёт запись» + время |
+| Начать / Остановить запись | Обычная запись с выбранными настройками |
+| Самотест SCO (10 с) | Главный тест: 10 секунд WAV + отчёт |
+| Контрольный прогон (10 с) | То же самое, но с микрофона телефона — эталон для сравнения |
+| Длительность записи | Без ограничения, 10 с, 30 с, 1, 5, 15, 30, 60 минут |
+| Формат файла | `WAV` (16 кГц PCM, точные метрики) или `M4A` (AAC 64 кбит/с, компактно) |
+| Микрофон телефона | Галочка — писать с телефона, не трогая SCO |
+| Папка вывода | Системный выбор папки (SAF), разрешение сохраняется |
+| Отчёт последнего прогона | Тот самый текст, что раньше вытаскивался через adb |
+| Список записей | Имена и размеры последних файлов |
+
+Запись всегда сначала идёт в память приложения
+(`Android/data/<package>/files/Music/`), и только готовый файл (вместе с `.txt`-отчётом)
+копируется в выбранную папку. Так неудачный экспорт никогда не уничтожает запись.
+
+---
+
+## 5. Порядок проверки
+
+1. Наденьте часы, убедитесь, что они подключены и как гарнитура, и в Gadgetbridge.
+2. Откройте экран диктофона.
+3. Нажмите **«Самотест SCO (10 секунд)»** и все 10 секунд говорите вслух рядом с часами
+   (телефон лучше отложить подальше).
+4. Дождитесь отчёта на экране и сверьте его с таблицей ниже.
+5. При сомнениях нажмите **«Контрольный прогон»** и сравните цифры.
+
+Во время записи на часах в плеере должна появиться строка вида `REC ● 00:07` и исполнитель
+`CMF recorder` — это трюк с MediaSession, он же даёт старт/стоп кнопками часов.
+
+---
+
+## 6. Как читать отчёт
+
+| Что видно | Вывод |
+|---|---|
+| `scoOffCallSupported=false` | Сам телефон/гарнитура говорит, что SCO вне звонка не поддерживается → нужен путь через имитацию звонка |
+| `headsetConnected=false` | Часы не подключены по HFP → вернитесь к шагу 2 |
+| `usedSco=false` + `failureReason=SCO link did not come up…` | Линк не поднялся за 8 секунд |
+| `usedSco=true`, `silentRatio>0.95` | Канал есть, но звука нет → часы не отдают микрофон вне звонка |
+| `usedSco=true`, `peak` ≈ 0.1–0.9, `silentRatio<0.9` | ❌→✅ **Главный успех**: диктофон возможен |
+| `sampleRate=16000` | Широкополосный mSBC |
+| `sampleRate=8000` | Узкополосный CVSD, звук «телефонный» |
+| `scoRoute=communicationDevice` | Новый API (Android 12+) |
+| `scoRoute=legacyStartBluetoothSco` | Старый путь |
+| `stopReason=sco lost` | Канал разорвался в процессе |
+
+Сравнение с контрольным прогоном: если у телефона `peak` нормальный, а у часов ноль —
+проблема именно в маршрутизации SCO, а не в коде записи.
+
+---
+
+## 7. Состав PoC
 
 | Файл | Роль |
-|------|------|
-| `CmfScoAudioLink.java` | поднятие/освобождение SCO: `setCommunicationDevice` (API 31+) или `startBluetoothSco` + `ACTION_SCO_AUDIO_STATE_UPDATED` |
-| `CmfMicRecorder.java` | рабочий поток `AudioRecord` → WAV, автовыбор 16000/8000 Гц, измерение RMS/peak, режим self-test |
-| `CmfWavWriter.java` | чистый Java-запись RIFF/WAVE с патчем длин при закрытии |
-| `CmfRecorderStatus.java` | форматирование `REC ● 00:42` для экрана часов и шторки |
-| `CmfMicRecorderService.java` | foreground-сервис (`microphone`) + `MediaSession` для кнопок часов |
-| `app/src/debug/AndroidManifest.xml` | разрешения и регистрация сервиса **только в debug-сборке** |
+|---|---|
+| `recorder/CmfRecorderActivity.java` | Экран диктофона, UI собран кодом |
+| `recorder/CmfRecorderPrefs.java` | Настройки (длительность, формат, папка, источник) |
+| `recorder/CmfRecorderState.java` | Живое состояние для UI |
+| `recorder/CmfMicRecorderService.java` | Foreground-сервис, MediaSession, экспорт результата |
+| `recorder/CmfMicRecorder.java` | Движок WAV + все измерения |
+| `recorder/CmfCompressedRecorder.java` | Движок AAC/M4A на MediaRecorder |
+| `recorder/CmfScoAudioLink.java` | Поднятие и контроль SCO-канала |
+| `recorder/CmfWavWriter.java` | WAV-заголовок и длительность |
+| `recorder/CmfRecorderStatus.java` | Строки статуса для часов и имена файлов |
+| `recorder/CmfRecorderExporter.java` | Копирование в выбранную папку через SAF |
+| `res/xml/devicesettings_cmf_recorder.xml` | Пункт в настройках часов |
+| `app/src/debug/AndroidManifest.xml` | Разрешения, сервис и экран — только для debug |
 
-Пакет: `nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.recorder`
-
-Ни один существующий файл проекта не изменён, основной `AndroidManifest.xml` не тронут: сервис и разрешение `RECORD_AUDIO` попадают только в debug-вариант через merge источникового набора `debug`. Релиз-сборка остаётся без новых разрешений.
+В релизной сборке классы компилируются, но не объявлены в манифесте, поэтому пункт
+«Диктофон часов» ничего не откроет. Ни одного нового разрешения в release не добавляется.
 
 ---
 
-## 2. Сборка и установка
+## 8. Известные ограничения
 
-APK собирает CI (`CMF P0 build` → артефакт `GadgetbridgeCMF-P0-debug-apk`) или локально:
+* Запускать запись надо с экрана (или кнопкой часов, пока сервис жив): Android 12+
+  запрещает старт микрофонного foreground-сервиса из фона.
+* Формат M4A даёт грубые метрики (амплитуда опрашивается 5 раз в секунду), поэтому
+  самотест всегда пишет WAV.
+* Очень короткая M4A-запись (меньше примерно секунды) может дать битый файл —
+  это ограничение MediaRecorder, ошибка попадает в `failureReason`.
+* Запись и музыка одновременно невозможны: SCO занимает аудиоканал часов.
 
-```bash
-./gradlew :app:testMainlineDebugUnitTest
-./gradlew assembleMainlineDebug
-adb install -r app/build/outputs/apk/mainline/debug/*.apk
-```
+---
 
-Определить имя пакета установленной сборки:
+## Приложение: вариант через adb (необязательно)
 
-```bash
-adb shell pm list packages | grep -i gadgetbridge
-# далее подставляйте его вместо $PKG
+Сервис по-прежнему принимает интенты, если компьютер всё же окажется под рукой:
+
+```sh
 PKG=nodomain.freeyourgadget.gadgetbridge
-```
+SVC=$PKG/nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.recorder.CmfMicRecorderService
 
-Выдать разрешения (или вручную в настройках приложения):
-
-```bash
 adb shell pm grant $PKG android.permission.RECORD_AUDIO
-adb shell pm grant $PKG android.permission.BLUETOOTH_CONNECT
-adb shell pm grant $PKG android.permission.POST_NOTIFICATIONS
+adb shell am start-foreground-service -n $SVC \
+  -a nodomain.freeyourgadget.gadgetbridge.cmf.recorder.SELFTEST
+adb shell run-as $PKG ls files/Music
+adb logcat -s CmfMicRecorder CmfScoAudioLink CmfMicRecorderService
 ```
 
-Перед тестом: часы должны быть **спарены как Bluetooth-гарнитура** (не только BLE!) и в статусе «подключено» в настройках Bluetooth телефона. Без HFP-профиля SCO не поднимется вообще.
-
----
-
-## 3. Запуск
-
-Класс сервиса:
-
-```
-nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.recorder.CmfMicRecorderService
-```
-
-### 3.1 Самодиагностика (главный тест гипотезы)
-
-Запись 10 с + текстовый отчёт:
-
-```bash
-adb shell am start-foreground-service \
-  -n $PKG/nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.recorder.CmfMicRecorderService \
-  -a nodomain.freeyourgadget.gadgetbridge.cmf.recorder.SELFTEST \
-  --ei duration_seconds 10
-```
-
-Говорите в часы, а не в телефон (телефон лучше отложить метра на два) — так сразу видно, чей микрофон попал в запись.
-
-### 3.2 Свободная запись
-
-```bash
-# старт
-adb shell am start-foreground-service -n $PKG/….CmfMicRecorderService \
-  -a nodomain.freeyourgadget.gadgetbridge.cmf.recorder.START
-# стоп
-adb shell am start-foreground-service -n $PKG/….CmfMicRecorderService \
-  -a nodomain.freeyourgadget.gadgetbridge.cmf.recorder.STOP
-```
-
-Доступные action-ы: `START`, `STOP`, `TOGGLE`, `SELFTEST`.
-Дополнительные extras: `--ei duration_seconds N`, `--ez use_phone_mic true` (контрольный прогон без SCO, чтобы сравнить звук).
-
-### 3.3 Где результат
-
-```bash
-adb shell ls -l /sdcard/Android/data/$PKG/files/Music/
-adb shell cat /sdcard/Android/data/$PKG/files/Music/cmf-rec-*.txt
-adb pull /sdcard/Android/data/$PKG/files/Music/
-```
-
-Логи: `adb logcat -s CmfMicRecorder CmfScoAudioLink CmfMicRecorderService`
-
----
-
-## 4. Как читать отчёт
-
-```
-scoOffCallSupported=true          # AudioManager.isBluetoothScoAvailableOffCall()
-headsetConnected=true            # часы видны в профиле HEADSET
-scoRoute=communicationDevice     # либо legacyStartBluetoothSco
-scoConnectMillis=742             # сколько ждали канал
-(sampleRate=16000, channels=1)   # 16000 = mSBC, 8000 = CVSD
-durationMillis=10015
-peak=0.71  rms=0.083  silentRatio=0.04
-```
-
-Интерпретация:
-
-| Наблюдение | Вывод |
-|------------|-------|
-| `scoOffCallSupported=false` | платформа телефона запрещает SCO вне звонка → вариант 1 на этом телефоне невозможен |
-| `headsetConnected=false` | часы подключены только по BLE → спарить как гарнитуру |
-| канал не поднялся (`sco timeout`) | прошивка часов открывает SCO только на звонок → остаётся обход через фейковый звонок или вариант 2 |
-| `silentRatio > 0.95` | канал есть, но звука нет → проверить `AudioSource`, громкость, право `RECORD_AUDIO` |
-| звук есть, но это микрофон телефона | маршрутизация не применилась → см. `scoRoute` и лог `communicationDevice=…` |
-| `sampleRate=8000` | кодек CVSD; для mSBC (16 кГц) нужен wideband на обоих концах |
-
----
-
-## 5. Управление с часов
-
-Сервис поднимает `MediaSession` с метаданными `REC ● mm:ss` / `CMF recorder`. Отсюда бесплатно получается:
-
-1. **Индикатор на часах.** Gadgetbridge транслирует активную медиа-сессию в `MUSIC_INFO_SET (FFFF 905C)`, так что экран плеера показывает статус и таймер записи.
-2. **Кнопки часов.** `MUSIC_BUTTON (FFFF A05D)` превращается в медиа-клавиши, которые приходят в нашу сессию: `play/pause → старт/стоп`, `next → метка`.
-
-⚠️ Зависит от того, какая сессия активна в системе и включён ли доступ к уведомлениям. Детерминированный вариант — прямой хук в `CmfWatchProSupport.onCommand` (шаг P1):
-
-```java
-case MUSIC_BUTTON:
-    if (CmfMicRecorderService.isRecordingSessionActive()) {
-        CmfMicRecorderService.dispatch(getContext(),
-                CmfMicRecorderService.ACTION_TOGGLE);
-        return true;
-    }
-    break;
-```
-
-Плюс `AT SETMOTOR=1` для тактильного подтверждения старта/стопа.
-
----
-
-## 6. Ограничения PoC
-
-* качество — телефонное: моно 8/16 кГц, шумоподавление под речь;
-* пока канал поднят, система считает что идёт «разговор»: прочее аудио приглушается, входящий звонок прерывает запись;
-* без Opus/AAC — только WAV (16-bit PCM), ≈ 32 КБ/с на 16 кГц;
-* без UI в приложении: управление через adb, шторку или кнопки часов;
-* сервис объявлен `exported="true"` **только в debug-манифесте** ради adb-тестов; перед мержем в релиз перенести в основной манифест с `exported="false"`.
-
----
-
-## 7. Дальше
-
-1. Прогнать `SELFTEST` и приложить отчёт — от него зависит вся ветка работ. Затем обновить статус в `CMF_CAPABILITIES.md` §0.
-2. Если SCO работает: Opus-кодирование, UI-экран списка записей, автостоп по тишине, транскрипция.
-3. Если не работает: проверить сценарий с `INCOMING_CALL (0064 0001)` (часы сами откроют аудиоканал) либо уходить на уровень C.
+Поддерживаемые действия: `START`, `STOP`, `TOGGLE`, `SELFTEST`;
+дополнительные параметры `--ei duration_seconds N` и `--ez use_phone_mic true`.
+Если параметры не переданы, берутся настройки с экрана диктофона.
