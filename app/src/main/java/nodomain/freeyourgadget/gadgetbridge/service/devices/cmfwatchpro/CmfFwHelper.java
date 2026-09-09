@@ -26,6 +26,7 @@ import java.io.BufferedInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 
+import nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.watchface.CmfPhotoWatchface;
 import nodomain.freeyourgadget.gadgetbridge.util.ArrayUtils;
 import nodomain.freeyourgadget.gadgetbridge.util.FileUtils;
 import nodomain.freeyourgadget.gadgetbridge.util.StringUtils;
@@ -42,6 +43,7 @@ public class CmfFwHelper {
     private byte[] fw;
     private boolean typeFirmware;
     private boolean typeWatchface;
+    private boolean typePhotoWatchface;
     private boolean typeAgps;
 
     private String name;
@@ -87,6 +89,15 @@ public class CmfFwHelper {
         return typeWatchface;
     }
 
+    /**
+     * A photo watchface built by the in-app editor. It uses the same transfer commands as a
+     * structured watchface, but the second init request carries the clock overlay descriptor
+     * instead of a random watchface id.
+     */
+    public boolean isPhotoWatchface() {
+        return typePhotoWatchface;
+    }
+
     public boolean isFirmware() {
         return typeFirmware;
     }
@@ -116,7 +127,10 @@ public class CmfFwHelper {
     }
 
     private void parseBytes() {
-        if (parseAsWatchface()) {
+        if (parseAsPhotoWatchface()) {
+            typeWatchface = true;
+            typePhotoWatchface = true;
+        } else if (parseAsWatchface()) {
             assert name != null;
             typeWatchface = true;
         } else if (parseAsFirmware()) {
@@ -125,6 +139,16 @@ public class CmfFwHelper {
         } else if (parseAsAgps()) {
             typeAgps = true;
         }
+    }
+
+    private boolean parseAsPhotoWatchface() {
+        if (!CmfPhotoWatchface.isPhotoWatchface(fw)) {
+            return false;
+        }
+
+        name = "Photo watchface";
+
+        return true;
     }
 
     private boolean parseAsWatchface() {
