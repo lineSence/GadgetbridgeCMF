@@ -58,9 +58,9 @@ import java.util.Locale;
 
 /**
  * Everything the microphone PoC needs, without adb: start and stop a recording, run the SCO
- * self test, sweep the capture presets and sample rates when the link is up but silent, pick the
- * duration, the output format and the output folder, and read the report of the last run right on
- * the phone.
+ * self test, sweep the capture presets and sample rates when the link is up but silent, repeat
+ * that sweep inside a self-managed Telecom call, pick the duration, the output format and the
+ * output folder, and read the report of the last run right on the phone.
  *
  * <p>The UI is built in code on purpose. The screen ships in the debug source set only (see
  * {@code app/src/debug/AndroidManifest.xml}), and building it programmatically keeps it from
@@ -175,22 +175,34 @@ public class CmfRecorderActivity extends Activity implements CmfRecorderState.Li
         });
 
         addSectionTitle(root, "Диагностика тишины");
-        addTextView(root, "Если канал поднимается, но запись пустая: перебор источников записи "
-                        + "и частот (16 кГц mSBC и 8 кГц CVSD) по 2,5 секунды на комбинацию. "
+        addTextView(root, "Перебор источников записи и частот (16 кГц mSBC и 8 кГц CVSD) "
+                        + "по 2,5 секунды на комбинацию, около 40 секунд на скан. "
                         + "Говорите в часы всё время скана и не выходите с этого экрана.",
                 12f, false);
 
         addButton(root, "Скан источников (MODE_IN_COMMUNICATION)", new View.OnClickListener() {
             @Override
             public void onClick(final View v) {
-                startProbe(false);
+                startProbe(false, false);
             }
         });
 
         addButton(root, "Скан источников (MODE_IN_CALL)", new View.OnClickListener() {
             @Override
             public void onClick(final View v) {
-                startProbe(true);
+                startProbe(true, false);
+            }
+        });
+
+        addTextView(root, "Если всё молчит: часы открывают микрофон только по индикации звонка. "
+                        + "Нижняя кнопка создаёт служебный VoIP-звонок в системном Telecom "
+                        + "и повторяет скан внутри звонка. Никуда не звонит, связь не используется.",
+                12f, false);
+
+        addButton(root, "Скан с имитацией звонка (Telecom)", new View.OnClickListener() {
+            @Override
+            public void onClick(final View v) {
+                startProbe(false, true);
             }
         });
 
@@ -365,8 +377,12 @@ public class CmfRecorderActivity extends Activity implements CmfRecorderState.Li
      * Walks the capture preset and sample rate matrix on a background thread. The screen stays in
      * the foreground for the whole run, which is what keeps the microphone accessible without a
      * foreground service.
+     *
+     * @param inCallMode   force {@code MODE_IN_CALL} instead of {@code MODE_IN_COMMUNICATION}
+     * @param telecomCall  place a self-managed Telecom call first, so the watch is told that a
+     *                     call is in progress and opens its microphone
      */
-    private void startProbe(final boolean inCallMode) {
+    private void startProbe(final boolean inCallMode, final boolean telecomCall) {
         if (probeRunning) {
             toast("Скан уже идёт");
             return;
@@ -381,8 +397,21 @@ public class CmfRecorderActivity extends Activity implements CmfRecorderState.Li
             return;
         }
 
+        if (telecomCall) {
+            if (!CmfTelecomCallShim.isSupported()) {
+                toast("Имитация звонка требует Android 8.0 или новее");
+                return;
+            }
+            if (!CmfTelecomCallShim.hasPermission(this)) {
+                toast("Нет разрешения MANAGE_OWN_CALLS, переустановите debug-сборку");
+                return;
+            }
+        }
+
         probeRunning = true;
-        probeReport = "Скан идёт, говорите в часы…\n";
+        probeReport = telecomCall
+                ? "Скан с имитацией звонка идёт, говорите в часы…\n"
+                : "Скан идёт, говорите в часы…\n";
         refresh();
         toast("Скан запущен, говорите в часы");
 
@@ -394,11 +423,15 @@ public class CmfRecorderActivity extends Activity implements CmfRecorderState.Li
             public void run() {
                 String result;
                 try {
-                    result = CmfSourceProbe.run(
-                            context, CmfSourceProbe.DEFAULT_MILLIS_PER_COMBO, inCallMode);
+                    result = CmfSourceProbe.run(context, CmfSourceProbe.DEFAULT_MILLIS_PER_COMBO,
+                            inCallMode, telecomCall);
                 } catch (final Throwable t) {
                     LOG.warn("Probe crashed", t);
                     result = "probeError=" + t + "\n";
+                } finally {
+                    if (telecomCall) {
+                        CmfTelecomCallShim.endCall();
+                    }
                 }
 
                 final File file = CmfSourceProbe.writeReport(context, result);
