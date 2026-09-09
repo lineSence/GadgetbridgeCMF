@@ -14,12 +14,19 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!--
+        Needed to place the self-managed VoIP call that makes the platform tell the watch a call
+        is in progress, which is what unmutes its microphone. Install time permission, no dialog,
+        no telephony access and nothing is ever dialled.
+    -->
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+
     <application>
 
         <!--
-            The recorder screen: start/stop, SCO self test, duration, format and output folder.
-            It is exported and has a launcher entry so the PoC can be driven entirely from the
-            phone, without adb.
+            The recorder screen: start/stop, SCO self test, the source and sample rate sweep,
+            duration, format and output folder. It is exported and has a launcher entry so the
+            PoC can be driven entirely from the phone, without adb.
         -->
         <activity
             android:name="nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.recorder.CmfRecorderActivity"
@@ -44,6 +51,21 @@
             android:name="nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.recorder.CmfMicRecorderService"
             android:exported="true"
             android:foregroundServiceType="microphone" />
+
+        <!--
+            Self-managed connection service used to simulate an ongoing call. Telecom requires the
+            BIND_TELECOM_CONNECTION_SERVICE permission on the component, which only the system
+            holds, so nothing else on the device can bind to it.
+        -->
+        <service
+            android:name="nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.recorder.CmfTelecomCallShim"
+            android:exported="true"
+            android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE">
+
+            <intent-filter>
+                <action android:name="android.telecom.ConnectionService" />
+            </intent-filter>
+        </service>
 
     </application>
 
