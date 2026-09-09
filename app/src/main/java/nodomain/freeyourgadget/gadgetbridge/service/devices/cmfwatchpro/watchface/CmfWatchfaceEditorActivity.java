@@ -347,7 +347,10 @@ public class CmfWatchfaceEditorActivity extends Activity {
                     bitmap = decodeBitmap(uri);
                 } catch (final IOException | RuntimeException e) {
                     LOG.error("Failed to decode {}", uri, e);
-                    error = String.valueOf(e.getMessage());
+                    error = describeError(e);
+                } catch (final OutOfMemoryError e) {
+                    LOG.error("Out of memory while decoding {}", uri, e);
+                    error = describeError(e);
                 }
 
                 final Bitmap decoded = bitmap;
@@ -490,7 +493,10 @@ public class CmfWatchfaceEditorActivity extends Activity {
                     report = result.report + "\nфайл=" + output.getName();
                 } catch (final IOException | RuntimeException e) {
                     LOG.error("Failed to build watchface", e);
-                    report = "Ошибка сборки: " + e.getMessage();
+                    report = "Ошибка сборки: " + describeError(e);
+                } catch (final OutOfMemoryError e) {
+                    LOG.error("Out of memory while building the watchface", e);
+                    report = "Не хватило памяти: " + describeError(e);
                 }
 
                 final String finalReport = report;
@@ -515,7 +521,12 @@ public class CmfWatchfaceEditorActivity extends Activity {
     }
 
     private File writeToDisk(final byte[] data) throws IOException {
-        final File dir = new File(getExternalFilesDir(null), OUTPUT_DIR_NAME);
+        final File base = getExternalFilesDir(null);
+        if (base == null) {
+            throw new IOException("Внешняя память недоступна");
+        }
+
+        final File dir = new File(base, OUTPUT_DIR_NAME);
         if (!dir.exists() && !dir.mkdirs()) {
             throw new IOException("Не создаётся папка " + dir);
         }
@@ -551,7 +562,7 @@ public class CmfWatchfaceEditorActivity extends Activity {
                     builtFile);
         } catch (final IllegalArgumentException e) {
             LOG.error("Failed to share {}", builtFile, e);
-            statusView.setText("Файл не передаётся: " + e.getMessage());
+            statusView.setText("Файл не передаётся: " + describeError(e));
             return;
         }
 
@@ -565,7 +576,7 @@ public class CmfWatchfaceEditorActivity extends Activity {
             startActivity(intent);
         } catch (final RuntimeException e) {
             LOG.error("Failed to open the install screen", e);
-            statusView.setText("Экран установки не открылся: " + e.getMessage());
+            statusView.setText("Экран установки не открылся: " + describeError(e));
         }
     }
 
@@ -580,7 +591,7 @@ public class CmfWatchfaceEditorActivity extends Activity {
                     report = CmfPhotoWatchface.describe(readAll(uri));
                 } catch (final IOException | RuntimeException e) {
                     LOG.error("Failed to inspect {}", uri, e);
-                    report = "Файл не прочитан: " + e.getMessage();
+                    report = "Файл не прочитан: " + describeError(e);
                 }
 
                 final String finalReport = report;
@@ -594,6 +605,22 @@ public class CmfWatchfaceEditorActivity extends Activity {
                 });
             }
         }, "cmf-watchface-inspect").start();
+    }
+
+    /**
+     * Formats a failure for the screen.
+     *
+     * <p>Several exceptions carry no message at all. {@link java.nio.BufferOverflowException} is
+     * the classic one, and Android does not add helpful null pointer messages either. Printing
+     * only {@code getMessage()} then shows the bare word null, which says nothing about what
+     * failed. The class name is always available, so it is always shown.</p>
+     */
+    private static String describeError(final Throwable e) {
+        final String message = e.getMessage();
+        if (message == null || message.isEmpty()) {
+            return e.getClass().getSimpleName() + " (без текста, см. logcat)";
+        }
+        return message + " [" + e.getClass().getSimpleName() + "]";
     }
 
     private void restoreLastFile() {
