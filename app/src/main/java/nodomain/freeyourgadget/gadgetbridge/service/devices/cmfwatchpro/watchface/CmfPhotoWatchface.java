@@ -92,6 +92,27 @@ public final class CmfPhotoWatchface {
     /** The watch ignores the numeric id for photo watchfaces and always replaces the custom slot. */
     public static final int PHOTO_WATCHFACE_ID = 0xffffffff;
 
+    /** Number of trailing 0xff bytes in the transfer descriptor. */
+    private static final int DESCRIPTOR_RESERVED = 8;
+
+    /**
+     * Length of the transfer descriptor in bytes.
+     *
+     * <p>Derived from the field list in {@link #buildDescriptor(Params, int)} rather than written
+     * as a literal, because getting it wrong costs a {@link java.nio.BufferOverflowException},
+     * which carries no message at all and therefore reports itself as a null error.</p>
+     */
+    public static final int DESCRIPTOR_SIZE =
+            1    // marker 0xa5
+            + 4  // file size
+            + 4  // watchface id
+            + 3  // fixed bytes 01 01 01
+            + 1  // clock style
+            + 2  // x position
+            + 2  // y position
+            + 2  // clock colour, RGB565
+            + DESCRIPTOR_RESERVED;
+
     /** Clock styles the firmware offers for photo watchfaces. */
     public static final int[] STYLE_IDS = {0, 1, 2, 3};
     public static final String[] STYLE_LABELS = {
@@ -219,6 +240,7 @@ public final class CmfPhotoWatchface {
         report.append("стиль=").append(params.styleId)
                 .append(" позиция=").append(params.positionX).append(",").append(params.positionY)
                 .append(String.format(Locale.ROOT, " цвет565=%04x\n", params.getColor565()));
+        report.append("дескриптор=").append(hex(descriptor, 0, descriptor.length)).append("\n");
         report.append("самопроверка LZ4=пройдена");
 
         return new Result(file, descriptor, fullPacked.length, thumbPacked.length,
@@ -230,10 +252,25 @@ public final class CmfPhotoWatchface {
      *
      * <p>Structured watchfaces send a random watchface id here. Photo watchfaces instead pin the id
      * to {@link #PHOTO_WATCHFACE_ID} and append the clock overlay descriptor, which is how the
-     * firmware learns where to draw the time.</p>
+     * firmware learns where to draw the time. All fields are big endian, like the rest of the CMF
+     * command protocol:</p>
+     *
+     * <pre>
+     * 0x00 u8      0xa5, the same marker the structured path sends
+     * 0x01 u32 BE  total file size
+     * 0x05 u32 BE  watchface id, 0xffffffff for the photo slot
+     * 0x09 u8[3]   01 01 01, photo marker, asset count, overlay enabled
+     * 0x0c u8      clock style id
+     * 0x0d u16 BE  clock x position
+     * 0x0f u16 BE  clock y position
+     * 0x11 u16 BE  clock colour, RGB565
+     * 0x13 u8[8]   0xff, reserved
+     * </pre>
+     *
+     * <p>That is {@link #DESCRIPTOR_SIZE} bytes in total.</p>
      */
     public static byte[] buildDescriptor(final Params params, final int fileSize) {
-        final ByteBuffer buf = ByteBuffer.allocate(24).order(ByteOrder.BIG_ENDIAN);
+        final ByteBuffer buf = ByteBuffer.allocate(DESCRIPTOR_SIZE).order(ByteOrder.BIG_ENDIAN);
         buf.put((byte) 0xa5);
         buf.putInt(fileSize);
         buf.putInt(PHOTO_WATCHFACE_ID);
@@ -244,9 +281,17 @@ public final class CmfPhotoWatchface {
         buf.putShort((short) params.positionX);
         buf.putShort((short) params.positionY);
         buf.putShort((short) params.getColor565());
-        for (int i = 0; i < 8; i++) {
+        for (int i = 0; i < DESCRIPTOR_RESERVED; i++) {
             buf.put((byte) 0xff); // reserved, the stock app sends 0xff here
         }
+
+        if (buf.position() != DESCRIPTOR_SIZE) {
+            // Cannot happen while DESCRIPTOR_SIZE is derived from the same field list, but a
+            // named failure is worth more than a silent truncation if somebody edits one side.
+            throw new IllegalStateException("Дескриптор занял " + buf.position()
+                    + " Б вместо " + DESCRIPTOR_SIZE);
+        }
+
         return buf.array();
     }
 
