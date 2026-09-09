@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - feature/cmf-p0
+  pull_request:
+    branches:
+      - master
   workflow_dispatch:
 
 permissions:
