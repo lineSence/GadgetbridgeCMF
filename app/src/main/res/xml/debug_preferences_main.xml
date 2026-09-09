@@ -21,18 +21,17 @@
             android:title="@string/pref_write_logfiles" />
 
         <Preference
-            android:icon="@drawable/ic_refresh"
-            android:key="log_restart"
-            android:summary="@string/pref_restart_logging_summary"
-            android:title="@string/pref_restart_logging_title"
-            app:isPreferenceVisible="false" />
-
-        <Preference
             android:dependency="log_to_file"
             android:icon="@drawable/ic_share"
             android:key="pref_debug_share_logs"
             android:persistent="false"
             android:title="@string/share_log" />
+
+        <Preference
+            android:key="log_restart"
+            android:summary="@string/pref_restart_logging_summary"
+            android:title="@string/pref_restart_logging_title"
+            app:isPreferenceVisible="false" />
 
     </PreferenceCategory>
 
@@ -124,6 +123,14 @@
             android:key="pref_debug_other"
             android:persistent="false"
             android:title="@string/debug_other_actions" />
+
+        <Preference
+            android:fragment="nodomain.freeyourgadget.gadgetbridge.activities.debug.CmfOpenDebugFragment"
+            android:key="pref_debug_cmfopen"
+            android:persistent="false"
+            android:title="CMFOPEN — CMF Watch Pro 2 tests"
+            android:summary="Protocol smoke tests using existing Debug Activity infrastructure"
+            app:iconSpaceReserved="false" />
 
     </PreferenceCategory>
 
