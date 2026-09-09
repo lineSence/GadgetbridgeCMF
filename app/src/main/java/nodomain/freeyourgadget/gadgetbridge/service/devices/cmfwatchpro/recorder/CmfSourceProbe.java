@@ -40,20 +40,17 @@ import java.util.Locale;
 /**
  * Diagnostics for the "the SCO link is up but every sample is zero" case.
  *
- * <p>When the watch accepts an SCO connection outside of a call but never opens its uplink,
- * the platform still hands out a perfectly valid {@code AudioRecord} that reads silence. The
- * usual culprits are the capture preset, the sample rate negotiated for the link (wideband
- * mSBC at 16 kHz versus narrowband CVSD at 8 kHz), the audio mode and which input device the
- * framework picks. This probe walks that matrix on the phone itself and prints how many
- * non-zero samples each combination produced, so the next step can be decided from data
- * instead of guesswork.</p>
+ * <p>The probe walks the capture preset and sample rate matrix on the phone itself and prints
+ * what each combination captured: the sample rate negotiated for the link (wideband mSBC at
+ * 16 kHz versus narrowband CVSD at 8 kHz), the preset, the audio mode and, crucially,
+ * <em>which input device the framework actually routed the capture to</em>.</p>
  *
- * <p>Measurements on a CMF Watch Pro 2 with firmware 1.0.0.73 showed silence across the whole
- * matrix in both audio modes, with a peak of a few LSBs of quantisation noise. That points at
- * the microphone being gated on the hands-free call indicators rather than on SCO, which is
- * what {@link CmfTelecomCallShim} addresses: pass {@code useTelecomCall} and the sweep runs
- * inside a self-managed Telecom call, so the platform tells the watch that a call is in
- * progress.</p>
+ * <p>That last column is not cosmetic. When the watch is not connected over hands-free, or when
+ * Telecom keeps the call on the earpiece, Android silently falls back to the built-in microphone
+ * of the phone and the capture looks perfectly healthy: non-zero peaks, plausible RMS, low
+ * silence ratio. Without checking the routed device, such a run reads as "the watch microphone
+ * works" while in reality it recorded the room through the phone. Only rows whose routed device
+ * is {@code BLUETOOTH_SCO} count towards the verdict.</p>
  *
  * <p>{@link #run(Context, int, boolean, boolean)} blocks for roughly
  * {@code millisPerCombo * combinations} and must be called from a background thread while the
@@ -66,6 +63,9 @@ public final class CmfSourceProbe {
 
     /** How long to wait for the self-managed call to become active. */
     private static final long CALL_TIMEOUT_MILLIS = 6000L;
+
+    /** How long to keep asking Telecom for the Bluetooth route before giving up. */
+    private static final long ROUTE_TIMEOUT_MILLIS = 6000L;
 
     /** Capture presets worth trying, in the order in which they are most likely to work. */
     private static final int[] SOURCES = {
@@ -111,9 +111,8 @@ public final class CmfSourceProbe {
      *
      * @param millisPerCombo how long to capture per combination
      * @param inCallMode     when true, the audio mode is forced to {@code MODE_IN_CALL} instead of
-     *                       {@code MODE_IN_COMMUNICATION}, which some firmwares need before they
-     *                       open the microphone. Ignored when {@code useTelecomCall} is set,
-     *                       because Telecom owns the audio mode then.
+     *                       {@code MODE_IN_COMMUNICATION}. Ignored when {@code useTelecomCall} is
+     *                       set, because Telecom owns the audio mode then.
      * @param useTelecomCall when true, a self-managed Telecom call is placed first, so the watch
      *                       is told that a call is in progress
      */
@@ -134,6 +133,7 @@ public final class CmfSourceProbe {
 
         final CmfScoAudioLink link = new CmfScoAudioLink(context);
         report.append("scoOffCallSupported=").append(link.isScoAvailableOffCall()).append('\n');
+        report.append("inputDevices=").append(listInputDevices(audioManager)).append('\n');
 
         boolean linkAcquired = false;
         boolean callPlaced = false;
@@ -153,13 +153,20 @@ public final class CmfSourceProbe {
 
                 callPlaced = true;
                 final boolean callActive = CmfTelecomCallShim.awaitActive(CALL_TIMEOUT_MILLIS);
-                CmfTelecomCallShim.routeToBluetooth();
 
-                // Telecom needs a moment to hand the audio over to the headset.
-                sleep(1500L);
+                // Telecom may need several attempts before it hands the audio to the headset,
+                // especially right after the call became active.
+                final long routeDeadline = SystemClock.elapsedRealtime() + ROUTE_TIMEOUT_MILLIS;
+                String route = CmfTelecomCallShim.describeRoute();
+                while (SystemClock.elapsedRealtime() < routeDeadline
+                        && !"bluetooth".equals(route)) {
+                    CmfTelecomCallShim.routeToBluetooth();
+                    sleep(500L);
+                    route = CmfTelecomCallShim.describeRoute();
+                }
 
                 report.append("callActive=").append(callActive)
-                        .append("\ncallRoute=").append(CmfTelecomCallShim.describeRoute())
+                        .append("\ncallRoute=").append(route)
                         .append("\naudioMode=").append(audioManager != null
                                 ? audioManager.getMode() : -1)
                         .append("\nbluetoothScoOn=").append(audioManager != null
@@ -174,6 +181,11 @@ public final class CmfSourceProbe {
 
                 if (!callActive) {
                     report.append("\nЗвонок не стал активным, результаты ниже недостоверны.\n");
+                }
+
+                if (!link.isScoInputAvailable()) {
+                    report.append("\nВ системе нет SCO-входа: часы не подключены как гарнитура. "
+                            + "Любой звук ниже — это микрофон телефона.\n");
                 }
             } else {
                 linkAcquired = link.acquireBlocking(CmfScoAudioLink.DEFAULT_TIMEOUT_MILLIS);
@@ -209,10 +221,12 @@ public final class CmfSourceProbe {
                     .append(scoInput != null ? describe(scoInput) : "нет SCO-входа")
                     .append("\n\n");
 
-            report.append("источник / частота        байт    peak    rms  доля тишины\n");
+            report.append("источник / частота        байт    peak    rms  тишина  устройство\n");
 
-            int bestPeak = 0;
-            String bestCombo = null;
+            int bestScoPeak = 0;
+            String bestScoCombo = null;
+            int bestAnyPeak = 0;
+            String bestAnyDevice = null;
 
             for (int s = 0; s < SOURCES.length; s++) {
                 for (final int sampleRate : SAMPLE_RATES) {
@@ -221,39 +235,46 @@ public final class CmfSourceProbe {
 
                     report.append(String.format(
                             Locale.ROOT,
-                            "%-20s %5d %8d %7d %6d %8.2f%s%n",
+                            "%-20s %5d %8d %7d %6d %7.2f  %s%s%n",
                             SOURCE_NAMES[s],
                             sampleRate,
                             probe.bytes,
                             probe.peak,
                             probe.rms,
                             probe.silentRatio,
+                            probe.routedDevice,
                             probe.note == null ? "" : "  " + probe.note
                     ));
 
-                    if (probe.peak > bestPeak) {
-                        bestPeak = probe.peak;
-                        bestCombo = SOURCE_NAMES[s] + " @ " + sampleRate + " Гц";
+                    if (probe.peak > bestAnyPeak) {
+                        bestAnyPeak = probe.peak;
+                        bestAnyDevice = probe.routedDevice;
+                    }
+
+                    if (probe.routedFromWatch && probe.peak > bestScoPeak) {
+                        bestScoPeak = probe.peak;
+                        bestScoCombo = SOURCE_NAMES[s] + " @ " + sampleRate + " Гц";
                     }
                 }
             }
 
             report.append('\n');
-            if (bestPeak <= NOISE_FLOOR) {
+            if (bestScoPeak > NOISE_FLOOR) {
+                report.append(String.format(Locale.ROOT,
+                        "verdict=есть звук С ЧАСОВ: peak=%d на %s (захват шёл через BLUETOOTH_SCO).%n",
+                        bestScoPeak, bestScoCombo));
+            } else if (bestAnyPeak > NOISE_FLOOR) {
+                report.append(String.format(Locale.ROOT,
+                        "verdict=ЗВУК НЕ С ЧАСОВ. Максимум peak=%d пришёл с устройства %s, "
+                                + "то есть с микрофона телефона. Сначала надо добиться маршрута на часы.%n",
+                        bestAnyPeak, bestAnyDevice));
+            } else {
                 report.append(String.format(Locale.ROOT,
                         "verdict=тишина во всех комбинациях (максимум peak=%d, шум квантования). %s%n",
-                        bestPeak,
+                        bestAnyPeak,
                         useTelecomCall
                                 ? "Даже в режиме звонка часы не отдают микрофон."
                                 : "Попробуйте скан с имитацией звонка."));
-            } else if (bestPeak < 328) {
-                report.append(String.format(Locale.ROOT,
-                        "verdict=почти тишина, максимум peak=%d на %s.%n",
-                        bestPeak, bestCombo));
-            } else {
-                report.append(String.format(Locale.ROOT,
-                        "verdict=есть звук: peak=%d на %s. Ставьте эту комбинацию по умолчанию.%n",
-                        bestPeak, bestCombo));
             }
         } catch (final Exception e) {
             LOG.warn("Probe failed", e);
@@ -333,6 +354,9 @@ public final class CmfSourceProbe {
                     squares += (long) value * value;
                     samples++;
                 }
+
+                // The route can change mid capture, so sample it while data is flowing.
+                readRoutedDevice(record, probe);
             }
 
             if (samples > 0L) {
@@ -360,6 +384,66 @@ public final class CmfSourceProbe {
         }
 
         return probe;
+    }
+
+    /**
+     * Records which input device the framework is actually reading from. This is what separates
+     * "the watch microphone works" from "the phone microphone was used as a fallback".
+     */
+    private static void readRoutedDevice(final AudioRecord record, final Probe probe) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+            probe.routedDevice = "?";
+            return;
+        }
+
+        try {
+            final AudioDeviceInfo routed = record.getRoutedDevice();
+            if (routed == null) {
+                return;
+            }
+
+            probe.routedDevice = typeName(routed.getType());
+            if (routed.getType() == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+                probe.routedFromWatch = true;
+            }
+        } catch (final Exception e) {
+            LOG.debug("Could not read the routed device", e);
+        }
+    }
+
+    private static String typeName(final int type) {
+        switch (type) {
+            case AudioDeviceInfo.TYPE_BLUETOOTH_SCO:
+                return "BT_SCO";
+            case AudioDeviceInfo.TYPE_BUILTIN_MIC:
+                return "телефон";
+            case AudioDeviceInfo.TYPE_WIRED_HEADSET:
+                return "гарнитура";
+            case AudioDeviceInfo.TYPE_TELEPHONY:
+                return "telephony";
+            case AudioDeviceInfo.TYPE_USB_DEVICE:
+            case AudioDeviceInfo.TYPE_USB_HEADSET:
+                return "usb";
+            default:
+                return "type" + type;
+        }
+    }
+
+    private static String listInputDevices(final AudioManager audioManager) {
+        if (audioManager == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            return "неизвестно";
+        }
+
+        final StringBuilder sb = new StringBuilder();
+        for (final AudioDeviceInfo device
+                : audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)) {
+            if (sb.length() > 0) {
+                sb.append(", ");
+            }
+            sb.append(typeName(device.getType()));
+        }
+
+        return sb.length() == 0 ? "нет" : sb.toString();
     }
 
     private static void sleep(final long millis) {
@@ -429,6 +513,8 @@ public final class CmfSourceProbe {
         int peak;
         int rms;
         float silentRatio = 1f;
+        String routedDevice = "-";
+        boolean routedFromWatch;
         String note;
     }
 }
