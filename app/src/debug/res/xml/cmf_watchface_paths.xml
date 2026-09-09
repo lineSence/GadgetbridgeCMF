@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Paths the watchface file provider may share.
+
+    Only the app's own external files directory is exposed, which is where the editor writes the
+    built watchfaces. Nothing else on the device becomes reachable.
+-->
+<paths>
+    <external-files-path
+        name="cmf_watchfaces"
+        path="Watchfaces/" />
+</paths>
