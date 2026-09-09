@@ -71,7 +71,8 @@ public class CmfProtocolUtilsTest {
         assertEquals(Alarm.ALARM_MON | Alarm.ALARM_FRI, payload[6]);
         assertEquals(0x00, payload[7]);
         assertEquals('W', payload[8]);
-        assertEquals('p', payload[9]);
+        assertEquals('a', payload[9]);
+        assertEquals('p', payload[14]);
         assertEquals(0, payload[15]);
         assertEquals(0, payload[39]);
     }
