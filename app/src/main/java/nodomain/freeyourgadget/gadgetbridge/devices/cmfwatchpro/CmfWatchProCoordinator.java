@@ -327,6 +327,10 @@ public class CmfWatchProCoordinator extends AbstractBLEDeviceCoordinator {
             deviceSpecificSettings.addRootScreen(R.xml.devicesettings_contacts);
         }
 
+        // Watchface editor: the entry opens CmfWatchfaceEditorActivity by action, so it only does
+        // something in builds that declare that activity (debug). See docs/CMF_WATCHFACES.md.
+        deviceSpecificSettings.addRootScreen(R.xml.devicesettings_cmf_watchface);
+
         // Voice recorder PoC: the entry opens CmfRecorderActivity by action, so it only does
         // something in builds that declare that activity (debug). See docs/CMF_MIC_RECORDER.md.
         deviceSpecificSettings.addRootScreen(R.xml.devicesettings_cmf_recorder);
