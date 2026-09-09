@@ -102,6 +102,7 @@ public class CmfPreferences {
             case DeviceSettingsPreferenceConst.PREF_INACTIVITY_DND_START:
             case DeviceSettingsPreferenceConst.PREF_INACTIVITY_DND_END:
                 setStandingReminder(builder);
+                break;
             case DeviceSettingsPreferenceConst.PREF_HYDRATION_SWITCH:
             case DeviceSettingsPreferenceConst.PREF_HYDRATION_PERIOD:
             case DeviceSettingsPreferenceConst.PREF_HYDRATION_DND:
@@ -149,17 +150,13 @@ public class CmfPreferences {
                 activityUser.getCaloriesBurntGoal()
         );
 
-        final ByteBuffer buf = ByteBuffer.allocate(10).order(ByteOrder.BIG_ENDIAN);
+        final byte[] payload = CmfProtocolUtils.buildGoalsPayload(
+                activityUser.getStepsGoal(),
+                activityUser.getDistanceGoalMeters(),
+                activityUser.getCaloriesBurntGoal()
+        );
 
-        buf.put((byte) 0); // ?
-        buf.put((byte) 0); // ?
-        buf.putShort((short) activityUser.getStepsGoal());
-        buf.put((byte) 0); // ?
-        buf.put((byte) 0); // ?
-        buf.putShort((short) activityUser.getDistanceGoalMeters());
-        buf.putShort((short) activityUser.getCaloriesBurntGoal());
-
-        mSupport.sendCommand(builder, CmfCommand.GOALS_SET, buf.array());
+        mSupport.sendCommand(builder, CmfCommand.GOALS_SET, payload);
     }
 
     protected void setMeasurementSystem(final TransactionBuilder builder) {

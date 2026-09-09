@@ -61,6 +61,11 @@ import nodomain.freeyourgadget.gadgetbridge.util.GB;
 public class CmfActivitySync {
     private static final Logger LOG = LoggerFactory.getLogger(CmfActivitySync.class);
 
+    /** timestamp(u32) | wakeup(u32) | metadata(10 bytes) */
+    private static final int SLEEP_HEADER_SIZE = 18;
+    /** timestamp(u32) | duration(u16) | stage(u16) */
+    private static final int SLEEP_STAGE_SIZE = 8;
+
     private final CmfWatchProSupport mSupport;
 
     private final List<BaseActivitySummary> activitiesWithGps = new ArrayList<>();
@@ -111,6 +116,12 @@ public class CmfActivitySync {
     }
 
     private void handleActivityFetchAck1(final byte[] payload) {
+        if (payload.length == 0) {
+            LOG.error("Empty activity fetch ack payload");
+            abortSync("empty activity fetch ack");
+            return;
+        }
+
         switch (payload[0]) {
             case 0x01:
                 LOG.debug("Got activity fetch ack 1, starting step 2");
@@ -125,6 +136,8 @@ public class CmfActivitySync {
                 break;
             default:
                 LOG.warn("Unknown activity fetch ack code {}", payload[0]);
+                // Do not keep the device busy forever waiting for an ack that will not arrive
+                abortSync("unknown activity fetch ack code " + payload[0]);
                 return;
         }
 
@@ -132,6 +145,11 @@ public class CmfActivitySync {
     }
 
     private static void handleActivityFetchAck2(final byte[] payload) {
+        if (payload.length < 8) {
+            LOG.error("Activity fetch ack 2 payload too short: {}", payload.length);
+            return;
+        }
+
         final ByteBuffer buf = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN);
 
         final int activityTs = buf.getInt();
@@ -228,13 +246,20 @@ public class CmfActivitySync {
 
     private static void handleHeartRateResting(final byte[] payload) {
         // TODO persist resting HR samples;
-        LOG.warn("Persisting resting HR samples is not implemented");
+        LOG.warn("Persisting resting HR samples is not implemented, dropping {} bytes", payload.length);
     }
 
     private void handleSleepData(final byte[] payload) {
+        if (payload.length < SLEEP_HEADER_SIZE
+                || (payload.length - SLEEP_HEADER_SIZE) % SLEEP_STAGE_SIZE != 0) {
+            LOG.error("Unexpected sleep data payload size {}", payload.length);
+            return;
+        }
+
         final ByteBuffer buf = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN);
 
-        LOG.debug("Got sleep data samples");
+        LOG.debug("Got sleep data with {} stage samples",
+                (payload.length - SLEEP_HEADER_SIZE) / SLEEP_STAGE_SIZE);
 
         final int sessionTimestamp = buf.getInt();
         final int wakeupTime = buf.getInt();
@@ -248,7 +273,7 @@ public class CmfActivitySync {
 
         final List<CmfSleepStageSample> stageSamples = new ArrayList<>();
 
-        while (buf.remaining() > 0) {
+        while (buf.remaining() >= SLEEP_STAGE_SIZE) {
             final CmfSleepStageSample sample = new CmfSleepStageSample();
             sample.setTimestamp(buf.getInt() * 1000L);
             sample.setDuration(buf.getShort());
@@ -377,6 +402,7 @@ public class CmfActivitySync {
         final int bytesPerWorkout;
 
         if (version == 3) {
+            // TODO the v3 packet is assumed to contain a single workout summary
             bytesPerWorkout = payload.length;
         } else if (payload.length % 32 == 0) {
             bytesPerWorkout = 32;
@@ -387,13 +413,18 @@ public class CmfActivitySync {
             return;
         }
 
+        if (bytesPerWorkout == 0) {
+            LOG.error("Empty workout summary payload");
+            return;
+        }
+
         LOG.debug("Got {} workout summary samples for version {}", payload.length / bytesPerWorkout, version);
 
         final ByteBuffer buf = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN);
 
         final CmfWorkoutSummaryParser summaryParser = new CmfWorkoutSummaryParser(getDevice(), getContext(), version);
 
-        while (buf.remaining() > 0) {
+        while (buf.remaining() >= bytesPerWorkout) {
             final byte[] summaryBytes = new byte[bytesPerWorkout];
             buf.get(summaryBytes);
 
@@ -406,11 +437,13 @@ public class CmfActivitySync {
             } catch (final Exception e) {
                 LOG.error("Failed to parse workout summary", e);
                 GB.toast(getContext(), "Failed to parse workout summary", Toast.LENGTH_LONG, GB.ERROR, e);
+                abortSync("failed to parse workout summary");
                 return;
             }
 
             if (summary == null) {
                 LOG.error("Workout summary is null");
+                abortSync("workout summary is null");
                 return;
             }
 
@@ -429,10 +462,11 @@ public class CmfActivitySync {
                 session.getBaseActivitySummaryDao().insertOrReplace(summary);
             } catch (final Exception e) {
                 GB.toast(getContext(), "Error saving activity summary", Toast.LENGTH_LONG, GB.ERROR, e);
+                abortSync("failed to save workout summary");
                 return;
             }
 
-            // Assume all activities have GPS
+            // Assume all activities have GPS - processGps bails out if there is no track
             activitiesWithGps.add(summary);
         }
     }
@@ -482,14 +516,34 @@ public class CmfActivitySync {
         LOG.debug("There are {} activities with gps to process", activitiesWithGps.size());
 
         for (final BaseActivitySummary summary : activitiesWithGps) {
-            processGps(summary);
+            try {
+                processGps(summary);
+            } catch (final Exception e) {
+                LOG.error("Failed to process gps track for {}", summary.getStartTime(), e);
+            }
         }
 
+        finishSync();
+    }
+
+    /**
+     * Releases the sync state after a failure, so that the device does not stay busy waiting
+     * for an ack that will never arrive.
+     */
+    private void abortSync(final String reason) {
+        LOG.warn("Aborting activity sync: {}", reason);
+        finishSync();
+    }
+
+    private void finishSync() {
         activitiesWithGps.clear();
 
-        getDevice().unsetBusyTask();
+        if (getDevice().isBusy()) {
+            getDevice().unsetBusyTask();
+        }
         GB.signalActivityDataFinish(getDevice());
         GB.updateTransferNotification(null, "", false, 100, getContext());
+        getDevice().sendDeviceUpdateIntent(getContext());
     }
 
     private void processGps(final BaseActivitySummary summary) {
