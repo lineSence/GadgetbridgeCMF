@@ -23,7 +23,8 @@ import nodomain.freeyourgadget.gadgetbridge.R;
 public class CmfWatchPro2Coordinator extends CmfWatchProCoordinator {
     @Override
     protected Pattern getSupportedDeviceName() {
-        return Pattern.compile("^CMF Watch Pro 2(-[A-Z0-9]{4})$");
+        // Some units advertise without the -XXXX suffix, so it has to stay optional
+        return Pattern.compile("^CMF Watch Pro 2(-[A-Z0-9]{4})?$");
     }
 
     @Override

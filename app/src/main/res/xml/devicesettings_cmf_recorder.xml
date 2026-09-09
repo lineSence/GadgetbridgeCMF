@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Entry point for the CMF microphone recorder in the device settings of the watch.
+
+    The item is resolved by action, not by class name, so this file stays independent of the
+    application id of the build variant. The recorder screen itself ships in the debug source set
+    (app/src/debug/AndroidManifest.xml); in release builds the entry simply has nothing to open.
+-->
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <PreferenceCategory
+        android:key="pref_category_cmf_recorder"
+        android:title="Диктофон">
+
+        <Preference
+            android:key="cmf_recorder_open"
+            android:persistent="false"
+            android:summary="Запись с микрофона часов: длительность, формат, папка вывода и самотест SCO"
+            android:title="Диктофон часов">
+            <intent android:action="nodomain.freeyourgadget.gadgetbridge.cmf.recorder.OPEN" />
+        </Preference>
+
+    </PreferenceCategory>
+
+</PreferenceScreen>

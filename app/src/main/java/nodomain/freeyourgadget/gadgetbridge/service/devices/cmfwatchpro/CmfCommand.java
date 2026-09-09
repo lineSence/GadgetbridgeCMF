@@ -63,6 +63,14 @@ public enum CmfCommand {
     DATA_TRANSFER_WATCHFACE_INIT_1_REPLY(0xffff, 0x0052),
     DATA_TRANSFER_WATCHFACE_INIT_2_REPLY(0xffff, 0xa063),
     DATA_TRANSFER_WATCHFACE_INIT_2_REQUEST(0xffff, 0x9063),
+    // A photo watchface is appended to the dial list by 0x9063 above. A structured watchface
+    // instead replaces an existing dial, and the watch expects the pair below for it.
+    DATA_TRANSFER_WATCHFACE_REPLACE_INIT_2_REPLY(0xffff, 0xa075),
+    DATA_TRANSFER_WATCHFACE_REPLACE_INIT_2_REQUEST(0xffff, 0x9075),
+    // Reads and rewrites the list of installed dials. This is also how the official app switches
+    // the active dial and how it deletes one: it resends the whole list, reordered or shortened.
+    DIAL_LIST_RET(0xffff, 0xa055),
+    DIAL_LIST_SET(0xffff, 0x9055),
     DO_NOT_DISTURB(0x0099, 0x0001),
     FACTORY_RESET(0x009a, 0x0001),
     FIND_PHONE(0x005b, 0x0001),
@@ -96,6 +104,8 @@ public enum CmfCommand {
     UNIT_LENGTH(0xffff, 0x9067),
     UNIT_TEMPERATURE(0xffff, 0x9068),
     WAKE_ON_WRIST_RAISE(0x0062, 0x0001),
+    // Known to be inert on firmware 1.0.0.73: it answers, but it does not switch the dial. Use
+    // DIAL_LIST_SET with the target dial first in the list instead.
     WATCHFACE(0x009f, 0x0001),
     WATER_REMINDER_GET(0x0061, 0x0002),
     WATER_REMINDER_SET(0x0061, 0x0001),

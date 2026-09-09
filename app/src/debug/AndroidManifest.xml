@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Debug only additions for the CMF tooling: the microphone recorder PoC and the watchface
+    editor.
+
+    Everything here is merged into debug builds only, so release builds gain no new
+    permissions and no new components. See docs/CMF_MIC_RECORDER.md and docs/CMF_WATCHFACES.md.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
+        Needed to place the self-managed VoIP call that makes the platform tell the watch a call
+        is in progress, which is what unmutes its microphone. Install time permission, no dialog,
+        no telephony access and nothing is ever dialled.
+    -->
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+
+    <application>
+
+        <!--
+            The recorder screen: start/stop, SCO self test, the source and sample rate sweep,
+            duration, format and output folder. It is exported and has a launcher entry so the
+            PoC can be driven entirely from the phone, without adb.
+        -->
+        <activity
+            android:name="nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.recorder.CmfRecorderActivity"
+            android:exported="true"
+            android:label="CMF диктофон"
+            android:launchMode="singleTop"
+            android:theme="@android:style/Theme.DeviceDefault">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Used by the "Диктофон" entry in the watch settings, no class name needed there. -->
+            <intent-filter>
+                <action android:name="nodomain.freeyourgadget.gadgetbridge.cmf.recorder.OPEN" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            The watchface editor: pick a photo, place the clock overlay, build the file and hand it
+            to the normal install flow. Also has a launcher entry so it can be opened directly.
+        -->
+        <activity
+            android:name="nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.watchface.CmfWatchfaceEditorActivity"
+            android:exported="true"
+            android:label="CMF циферблаты"
+            android:launchMode="singleTop"
+            android:theme="@android:style/Theme.DeviceDefault">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Used by the "Циферблаты" entry in the watch settings. -->
+            <intent-filter>
+                <action android:name="nodomain.freeyourgadget.gadgetbridge.cmf.watchface.OPEN" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            The watchface slots screen: shows the watchfaces installed on the watch, lets the user
+            pick the one the next upload replaces, and can activate or delete a watchface. The
+            watch has a fixed number of dial slots, so an upload without a chosen target would be
+            stored and never shown.
+        -->
+        <activity
+            android:name="nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.watchface.CmfWatchfaceSlotsActivity"
+            android:exported="true"
+            android:label="CMF слоты циферблатов"
+            android:launchMode="singleTop"
+            android:theme="@android:style/Theme.DeviceDefault">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- Used by the "Слоты циферблатов" entry in the watch settings. -->
+            <intent-filter>
+                <action android:name="nodomain.freeyourgadget.gadgetbridge.cmf.watchface.SLOTS" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name="nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.recorder.CmfMicRecorderService"
+            android:exported="true"
+            android:foregroundServiceType="microphone" />
+
+        <!--
+            Self-managed connection service used to simulate an ongoing call. Telecom requires the
+            BIND_TELECOM_CONNECTION_SERVICE permission on the component, which only the system
+            holds, so nothing else on the device can bind to it.
+        -->
+        <service
+            android:name="nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.recorder.CmfTelecomCallShim"
+            android:exported="true"
+            android:permission="android.permission.BIND_TELECOM_CONNECTION_SERVICE">
+
+            <intent-filter>
+                <action android:name="android.telecom.ConnectionService" />
+            </intent-filter>
+        </service>
+
+        <!--
+            Android forbids passing file URIs between components, so the built watchface is handed
+            to the install screen as a content URI. The provider is not exported and only grants
+            access per intent.
+
+            The class is our own subclass of FileProvider on purpose. Gadgetbridge already declares
+            androidx.core.content.FileProvider for screenshots, and the manifest merger treats two
+            declarations of the same provider class as a conflict.
+        -->
+        <provider
+            android:name="nodomain.freeyourgadget.gadgetbridge.service.devices.cmfwatchpro.watchface.CmfWatchfaceFileProvider"
+            android:authorities="${applicationId}.cmf.watchface.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/cmf_watchface_paths" />
+        </provider>
+
+    </application>
+
+</manifest>
