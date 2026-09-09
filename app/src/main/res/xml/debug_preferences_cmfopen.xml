@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.preference.PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <PreferenceCategory
+        android:title="CMFOPEN — Protocol tests"
+        app:iconSpaceReserved="false">
+
+        <Preference
+            android:key="cmfopen_test_time"
+            android:persistent="false"
+            android:title="CMFOPEN — Test TIME"
+            android:summary="Send the current phone time through the normal device-service path"
+            app:iconSpaceReserved="false" />
+
+        <Preference
+            android:key="cmfopen_test_contacts"
+            android:persistent="false"
+            android:title="CMFOPEN — Test CONTACTS"
+            android:summary="Send one deterministic test contact"
+            app:iconSpaceReserved="false" />
+
+        <Preference
+            android:key="cmfopen_test_alarms"
+            android:persistent="false"
+            android:title="CMFOPEN — Test ALARMS"
+            android:summary="Send one deterministic test alarm"
+            app:iconSpaceReserved="false" />
+
+        <Preference
+            android:key="cmfopen_test_activity"
+            android:persistent="false"
+            android:title="CMFOPEN — Test ACTIVITY"
+            android:summary="Trigger the existing activity-data fetch path"
+            app:iconSpaceReserved="false" />
+
+    </PreferenceCategory>
+
+</androidx.preference.PreferenceScreen>
